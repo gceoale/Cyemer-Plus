@@ -79,6 +79,11 @@ public class AutoGG extends Module {
                 && FriendManager.getInstance().isFriend(player.method_5667())) {
             return;
         }
+        for (TrackedHit hit : this.tracked) {
+            if (hit.entity == target) {
+                return;
+            }
+        }
         this.tracked.add(new TrackedHit(target, System.currentTimeMillis()));
     }
 
