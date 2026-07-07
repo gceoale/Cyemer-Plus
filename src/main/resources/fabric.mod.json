@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "id": "dynamic_fps",
+  "version": "4.3.5",
+  "name": "Dynamic FPS",
+  "description": "Reduce resource usage while Minecraft is in the background or idle.",
+  "authors": [
+    "juliand665",
+    "LostLuma"
+  ],
+  "contributors": [
+    "AC19970",
+    "Alexander317",
+    "AlphaKR93",
+    "Altegar",
+    "altrisi",
+    "atroniax",
+    "BurrConnie",
+    "DecafDawren",
+    "DenaryDev",
+    "dima-dencep",
+    "egeesin",
+    "EuropaYou",
+    "Felix14-v2",
+    "FITFC",
+    "godkyo98",
+    "GuNanOvO",
+    "Hubry",
+    "ImVietnam",
+    "ishi-sama",
+    "kau19an",
+    "kyrtion",
+    "Lucanoria",
+    "LotuxPunk",
+    "Madis0",
+    "mpustovoi",
+    "N4TH4NOT",
+    "notlin4",
+    "parly",
+    "pilahito",
+    "Pixaurora",
+    "Q2297045667",
+    "raspberrygitq",
+    "Rhbarber",
+    "RinixGG",
+    "Samekichi",
+    "Setadokalo",
+    "Shihyeon",
+    "Siphalor",
+    "sisby-folk",
+    "StarmanMine142",
+    "stijnvdkolk",
+    "Taarek",
+    "TheBossMagnus",
+    "TheLegendofSaram",
+    "triphora",
+    "wicivo",
+    "XfedeX",
+    "yichifauzi"
+  ],
+  "contact": {
+    "homepage": "https://dapprgames.com/mods",
+    "issues": "https://github.com/juliand665/Dynamic-FPS/issues",
+    "sources": "https://github.com/juliand665/Dynamic-FPS"
+  },
+  "icon": "assets/dynamic_fps/textures/icon.png",
+  "environment": "client",
+  "mixins": [
+    "cyemer.client.mixins.json"
+  ],
+  "entrypoints": {
+    "client": [
+      "com.slither.cyemer.Cyemer",
+      "com.slither.cyemer.CyemerClient"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.15.11",
+    "minecraft": "1.21.11",
+    "fabric": "*"
+  }
+}

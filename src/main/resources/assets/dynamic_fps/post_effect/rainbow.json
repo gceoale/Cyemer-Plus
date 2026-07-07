@@ -1,0 +1,193 @@
+{
+  "targets": {
+    "swap": {}
+  },
+  "passes": [
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "dynamic_fps:post/customrenders/rainbow/rainbow",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "minecraft:main",
+          "bilinear": true
+        }
+      ],
+      "output": "swap",
+      "uniforms": {
+        "RainbowConfig": [
+          {
+            "name": "BlurDir",
+            "type": "vec2",
+            "value": [ 1.0, 0.0 ]
+          },
+          {
+            "name": "Radius",
+            "type": "float",
+            "value": 5.0
+          },
+          {
+            "name": "RadiusMultiplier",
+            "type": "float",
+            "value": 1.0
+          }
+        ]
+      }
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "dynamic_fps:post/customrenders/rainbow/rainbow",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "swap",
+          "bilinear": true
+        }
+      ],
+      "output": "minecraft:main",
+      "uniforms": {
+        "RainbowConfig": [
+          {
+            "name": "BlurDir",
+            "type": "vec2",
+            "value": [ 0.0, 1.0 ]
+          },
+          {
+            "name": "Radius",
+            "type": "float",
+            "value": 5.0
+          },
+          {
+            "name": "RadiusMultiplier",
+            "type": "float",
+            "value": 1.0
+          }
+        ]
+      }
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "dynamic_fps:post/customrenders/rainbow/rainbow",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "minecraft:main",
+          "bilinear": true
+        }
+      ],
+      "output": "swap",
+      "uniforms": {
+        "RainbowConfig": [
+          {
+            "name": "BlurDir",
+            "type": "vec2",
+            "value": [ 1.0, 0.0 ]
+          },
+          {
+            "name": "Radius",
+            "type": "float",
+            "value": 5.0
+          },
+          {
+            "name": "RadiusMultiplier",
+            "type": "float",
+            "value": 0.5
+          }
+        ]
+      }
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "dynamic_fps:post/customrenders/rainbow/rainbow",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "swap",
+          "bilinear": true
+        }
+      ],
+      "output": "minecraft:main",
+      "uniforms": {
+        "RainbowConfig": [
+          {
+            "name": "BlurDir",
+            "type": "vec2",
+            "value": [ 0.0, 1.0 ]
+          },
+          {
+            "name": "Radius",
+            "type": "float",
+            "value": 5.0
+          },
+          {
+            "name": "RadiusMultiplier",
+            "type": "float",
+            "value": 0.5
+          }
+        ]
+      }
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "dynamic_fps:post/customrenders/rainbow/rainbow",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "minecraft:main",
+          "bilinear": true
+        }
+      ],
+      "output": "swap",
+      "uniforms": {
+        "RainbowConfig": [
+          {
+            "name": "BlurDir",
+            "type": "vec2",
+            "value": [ 1.0, 0.0 ]
+          },
+          {
+            "name": "Radius",
+            "type": "float",
+            "value": 5.0
+          },
+          {
+            "name": "RadiusMultiplier",
+            "type": "float",
+            "value": 0.25
+          }
+        ]
+      }
+    },
+    {
+      "vertex_shader": "minecraft:core/screenquad",
+      "fragment_shader": "dynamic_fps:post/customrenders/rainbow/rainbow",
+      "inputs": [
+        {
+          "sampler_name": "In",
+          "target": "swap",
+          "bilinear": true
+        }
+      ],
+      "output": "minecraft:main",
+      "uniforms": {
+        "RainbowConfig": [
+          {
+            "name": "BlurDir",
+            "type": "vec2",
+            "value": [ 0.0, 1.0 ]
+          },
+          {
+            "name": "Radius",
+            "type": "float",
+            "value": 5.0
+          },
+          {
+            "name": "RadiusMultiplier",
+            "type": "float",
+            "value": 0.25
+          }
+        ]
+      }
+    }
+  ]
+}

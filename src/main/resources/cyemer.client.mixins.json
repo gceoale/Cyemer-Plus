@@ -1,0 +1,32 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.slither.cyemer.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "ChatHudMixin",
+    "ClientPlayerInteractionManagerMixin",
+    "ClientPlayerInteractionManagerMixin$ClientPlayerInteractionManagerAccessor",
+    "ClientPlayNetworkHandlerMixin",
+    "GameRendererMixin",
+    "HandledScreenAccessor",
+    "HandledScreenInterface",
+    "InventoryScreenMixin",
+    "KeyBindingAccessor",
+    "MinecraftClientAccessor",
+    "MinecraftClientMixin",
+    "MouseMixin",
+    "PlayerListEntryMixin",
+    "SimpleOptionAccessor",
+    "WindowMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "mixins": [
+    "EntityGlowingMixin",
+    "LivingEntityMixin",
+    "PlayerEntityMixin",
+    "PlayerInventoryAccessor"
+  ]
+}
