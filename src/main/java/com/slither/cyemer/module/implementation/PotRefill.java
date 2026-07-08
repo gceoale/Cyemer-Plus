@@ -72,11 +72,35 @@ public class PotRefill extends Module {
     private int findHotbarSlotNeedingPot() {
         for (int i = 1; i <= 8; i++) {
             class_1799 stack = this.mc.field_1724.method_31548().method_5438(i);
-            if (!this.isHealthPot(stack)) {
+            if (!this.isHealthPot(stack) && !this.isProtectedPot(stack)) {
                 return i;
             }
         }
         return -1;
+    }
+
+    private boolean isProtectedPot(class_1799 stack) {
+        if (stack == null || stack.method_7960() || stack.method_7909() != class_1802.field_8436) {
+            return false;
+        }
+        class_1844 contents = stack.method_58694(class_9334.field_49651);
+        if (contents == null) {
+            return false;
+        }
+        Optional<class_6880<class_1842>> potionEntry = contents.comp_2378();
+        if (!potionEntry.isPresent()) {
+            return false;
+        }
+        class_6880<class_1842> entry = potionEntry.get();
+        return entry.method_55838(class_1847.field_9005)     // swiftness
+                || entry.method_55838(class_1847.field_8983) // long_swiftness
+                || entry.method_55838(class_1847.field_8966) // strong_swiftness
+                || entry.method_55838(class_1847.field_8978) // strength
+                || entry.method_55838(class_1847.field_8965) // long_strength
+                || entry.method_55838(class_1847.field_8993) // strong_strength
+                || entry.method_55838(class_1847.field_8986) // regeneration
+                || entry.method_55838(class_1847.field_9003) // long_regeneration
+                || entry.method_55838(class_1847.field_8992); // strong_regeneration
     }
 
     private boolean isHealthPot(class_1799 stack) {

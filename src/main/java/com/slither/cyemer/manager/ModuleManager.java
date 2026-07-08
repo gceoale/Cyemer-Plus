@@ -24,6 +24,7 @@ import com.slither.cyemer.module.implementation.Interface;
 import com.slither.cyemer.module.implementation.KeyPearl;
 import com.slither.cyemer.module.implementation.MaceSwap;
 import com.slither.cyemer.module.implementation.NoBreakDelay;
+import com.slither.cyemer.module.implementation.NPotRefill;
 import com.slither.cyemer.module.implementation.Notifications;
 import com.slither.cyemer.module.implementation.PotRefill;
 import com.slither.cyemer.module.implementation.ObsidianGlow;
@@ -150,6 +151,7 @@ public class ModuleManager {
         this.modules.add(new SnapTap());
         this.modules.add(new AutoGG());
         this.modules.add(new PotRefill());
+        this.modules.add(new NPotRefill());
     }
 
     public void onTick() {
