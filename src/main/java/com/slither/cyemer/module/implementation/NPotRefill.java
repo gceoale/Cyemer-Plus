@@ -20,16 +20,18 @@ import net.minecraft.class_9334;
 
 @Environment(EnvType.CLIENT)
 public class NPotRefill extends Module {
-    private static final int TOTEM_HOTBAR_INDEX = 1;    // hotbar slot 2
-    private static final int STRENGTH_HOTBAR_INDEX = 7; // hotbar slot 8
-    private static final int SPEED_HOTBAR_INDEX = 8;    // hotbar slot 9
+    private static final int TOTEM_HOTBAR_INDEX = 1;      // hotbar slot 2
+    private static final int HEALTH_HOTBAR_START = 2;     // hotbar slot 3
+    private static final int HEALTH_HOTBAR_END = 6;       // hotbar slot 7
+    private static final int STRENGTH_HOTBAR_INDEX = 7;   // hotbar slot 8
+    private static final int SPEED_HOTBAR_INDEX = 8;      // hotbar slot 9
 
     private final SliderSetting swapDelay = new SliderSetting("Swap Delay (ms)", 80.0, 0.0, 500.0, 0);
 
     private long lastSwapTime = 0L;
 
     public NPotRefill() {
-        super("NPotRefill", "Hover a totem/strength/speed pot to place it in slot 2/8/9.", Category.COMBAT);
+        super("NPotRefill", "Hover a totem / health / strength / speed pot to place it in slot 2 / 3-7 / 8 / 9.", Category.COMBAT);
         this.addSetting(this.swapDelay);
     }
 
@@ -52,23 +54,13 @@ public class NPotRefill extends Module {
         }
         class_1799 stack = focused.method_7677();
 
-        int targetHotbarIndex;
-        if (this.isTotem(stack)) {
-            targetHotbarIndex = TOTEM_HOTBAR_INDEX;
-        } else if (this.isStrengthPot(stack)) {
-            targetHotbarIndex = STRENGTH_HOTBAR_INDEX;
-        } else if (this.isSpeedPot(stack)) {
-            targetHotbarIndex = SPEED_HOTBAR_INDEX;
-        } else {
+        int targetHotbarIndex = this.resolveTargetSlot(stack);
+        if (targetHotbarIndex == -1) {
             return;
         }
 
         long now = System.currentTimeMillis();
         if (now - this.lastSwapTime < (long) this.swapDelay.getValue()) {
-            return;
-        }
-
-        if (this.slotAlreadyHolds(targetHotbarIndex, stack)) {
             return;
         }
 
@@ -81,22 +73,39 @@ public class NPotRefill extends Module {
         this.lastSwapTime = now;
     }
 
-    private boolean slotAlreadyHolds(int hotbarIndex, class_1799 hovered) {
-        class_1799 existing = this.mc.field_1724.method_31548().method_5438(hotbarIndex);
+    private int resolveTargetSlot(class_1799 hovered) {
         if (this.isTotem(hovered)) {
-            return this.isTotem(existing);
+            return this.isTotem(this.getHotbarStack(TOTEM_HOTBAR_INDEX)) ? -1 : TOTEM_HOTBAR_INDEX;
         }
         if (this.isStrengthPot(hovered)) {
-            return this.isStrengthPot(existing);
+            return this.isStrengthPot(this.getHotbarStack(STRENGTH_HOTBAR_INDEX)) ? -1 : STRENGTH_HOTBAR_INDEX;
         }
         if (this.isSpeedPot(hovered)) {
-            return this.isSpeedPot(existing);
+            return this.isSpeedPot(this.getHotbarStack(SPEED_HOTBAR_INDEX)) ? -1 : SPEED_HOTBAR_INDEX;
         }
-        return false;
+        if (this.isHealthPot(hovered)) {
+            for (int i = HEALTH_HOTBAR_START; i <= HEALTH_HOTBAR_END; i++) {
+                class_1799 existing = this.getHotbarStack(i);
+                if (!this.isHealthPot(existing) && !this.isProtectedPot(existing)) {
+                    return i;
+                }
+            }
+        }
+        return -1;
+    }
+
+    private class_1799 getHotbarStack(int index) {
+        return this.mc.field_1724.method_31548().method_5438(index);
     }
 
     private boolean isTotem(class_1799 stack) {
         return stack != null && !stack.method_7960() && stack.method_7909() == class_1802.field_8288;
+    }
+
+    private boolean isHealthPot(class_1799 stack) {
+        return this.matchesSplashPotion(stack,
+                class_1847.field_8963,   // healing
+                class_1847.field_8980);  // strong_healing
     }
 
     private boolean isStrengthPot(class_1799 stack) {
@@ -111,6 +120,13 @@ public class NPotRefill extends Module {
                 class_1847.field_9005,
                 class_1847.field_8983,
                 class_1847.field_8966);
+    }
+
+    private boolean isProtectedPot(class_1799 stack) {
+        return this.matchesSplashPotion(stack,
+                class_1847.field_9005, class_1847.field_8983, class_1847.field_8966,  // swiftness
+                class_1847.field_8978, class_1847.field_8965, class_1847.field_8993,  // strength
+                class_1847.field_8986, class_1847.field_9003, class_1847.field_8992); // regeneration
     }
 
     @SafeVarargs
