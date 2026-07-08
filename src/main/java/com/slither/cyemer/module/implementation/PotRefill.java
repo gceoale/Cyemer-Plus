@@ -60,14 +60,9 @@ public class PotRefill extends Module {
             return;
         }
 
-        int sourceSlot = this.findHealthPotInMainInventory();
-        if (sourceSlot == -1) {
-            return;
-        }
-
         this.mc.field_1761.method_2906(
                 screen.method_17577().field_7763,
-                sourceSlot,
+                focused.field_7874,
                 hotbarSlot,
                 class_1713.field_7791,
                 this.mc.field_1724);
@@ -78,16 +73,6 @@ public class PotRefill extends Module {
         for (int i = 1; i <= 8; i++) {
             class_1799 stack = this.mc.field_1724.method_31548().method_5438(i);
             if (!this.isHealthPot(stack)) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    private int findHealthPotInMainInventory() {
-        for (int i = 9; i < 36; i++) {
-            class_1799 stack = this.mc.field_1724.method_31548().method_5438(i);
-            if (this.isHealthPot(stack)) {
                 return i;
             }
         }
