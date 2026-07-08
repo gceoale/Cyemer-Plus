@@ -75,23 +75,30 @@ public class NPotRefill extends Module {
 
     private int resolveTargetSlot(class_1799 hovered) {
         if (this.isTotem(hovered)) {
-            return this.isTotem(this.getHotbarStack(TOTEM_HOTBAR_INDEX)) ? -1 : TOTEM_HOTBAR_INDEX;
+            class_1799 existing = this.getHotbarStack(TOTEM_HOTBAR_INDEX);
+            return (this.isTotem(existing) || this.isXpBottle(existing)) ? -1 : TOTEM_HOTBAR_INDEX;
         }
         if (this.isStrengthPot(hovered)) {
-            return this.isStrengthPot(this.getHotbarStack(STRENGTH_HOTBAR_INDEX)) ? -1 : STRENGTH_HOTBAR_INDEX;
+            class_1799 existing = this.getHotbarStack(STRENGTH_HOTBAR_INDEX);
+            return (this.isStrengthPot(existing) || this.isXpBottle(existing)) ? -1 : STRENGTH_HOTBAR_INDEX;
         }
         if (this.isSpeedPot(hovered)) {
-            return this.isSpeedPot(this.getHotbarStack(SPEED_HOTBAR_INDEX)) ? -1 : SPEED_HOTBAR_INDEX;
+            class_1799 existing = this.getHotbarStack(SPEED_HOTBAR_INDEX);
+            return (this.isSpeedPot(existing) || this.isXpBottle(existing)) ? -1 : SPEED_HOTBAR_INDEX;
         }
         if (this.isHealthPot(hovered)) {
             for (int i = HEALTH_HOTBAR_START; i <= HEALTH_HOTBAR_END; i++) {
                 class_1799 existing = this.getHotbarStack(i);
-                if (!this.isHealthPot(existing) && !this.isProtectedPot(existing)) {
+                if (!this.isHealthPot(existing) && !this.isProtectedPot(existing) && !this.isXpBottle(existing)) {
                     return i;
                 }
             }
         }
         return -1;
+    }
+
+    private boolean isXpBottle(class_1799 stack) {
+        return stack != null && !stack.method_7960() && stack.method_7909() == class_1802.field_8287;
     }
 
     private class_1799 getHotbarStack(int index) {
