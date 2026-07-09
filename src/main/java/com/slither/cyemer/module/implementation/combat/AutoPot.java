@@ -23,7 +23,7 @@ public class AutoPot extends Module {
     private static final float PITCH_THRESHOLD = 85.0F;
     private static final float HEAL_MARGIN = 0.5F;
 
-    private final SliderSetting threshold = new SliderSetting("Threshold", 0.625, 0.0, 1.0, 3);
+    private final SliderSetting threshold = new SliderSetting("Threshold", 0.25, 0.0, 1.0, 3);
     private final SliderSetting rotationSpeed = new SliderSetting("Rotation Speed", 20.0, 1.0, 20.0, 1);
     private final SliderSetting throwGap = new SliderSetting("Throw Gap (ms)", 50.0, 0.0, 500.0, 0);
     private final SliderSetting cooldownMax = new SliderSetting("Cooldown Max (ms)", 1500.0, 100.0, 3000.0, 0);
