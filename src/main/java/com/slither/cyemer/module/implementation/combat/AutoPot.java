@@ -20,32 +20,37 @@ import net.minecraft.class_9334;
 
 @Environment(EnvType.CLIENT)
 public class AutoPot extends Module {
+    private static final float PITCH_THRESHOLD = 85.0F;
+    private static final float HEAL_MARGIN = 0.5F;
+
     private final SliderSetting healThreshold = new SliderSetting("Heal Threshold", 0.625, 0.0, 1.0, 3);
     private final SliderSetting panicThreshold = new SliderSetting("Panic Threshold", 0.25, 0.0, 1.0, 3);
-    private final SliderSetting rotationSpeed = new SliderSetting("Rotation Speed", 15.0, 1.0, 20.0, 1);
-    private final SliderSetting throwGap = new SliderSetting("Throw Gap (ms)", 100.0, 0.0, 500.0, 0);
-    private final SliderSetting cooldown = new SliderSetting("Cooldown (ms)", 400.0, 0.0, 2000.0, 0);
+    private final SliderSetting rotationSpeed = new SliderSetting("Rotation Speed", 20.0, 1.0, 20.0, 1);
+    private final SliderSetting throwGap = new SliderSetting("Throw Gap (ms)", 50.0, 0.0, 500.0, 0);
+    private final SliderSetting cooldownMax = new SliderSetting("Cooldown Max (ms)", 1500.0, 100.0, 3000.0, 0);
     private final BooleanSetting silent = new BooleanSetting("Silent", true);
 
     private State state = State.IDLE;
-    private int potionSlot = -1;
     private int originalSlot = -1;
     private int throwsRemaining = 0;
-    private long stateEnteredAt = 0L;
+    private long lastThrowTime = 0L;
+    private long cooldownStartedAt = 0L;
+    private float hpAtLastThrow = 0.0F;
 
     public AutoPot() {
-        super("AutoPot", "Look down and throw instant-health splash pots when low. Double-pots below panic threshold.", Category.COMBAT);
+        super("AutoPot", "FPS-lookdown health pot with panic double-throw. Waits for the heal to register before firing again.", Category.COMBAT);
         this.addSetting(this.healThreshold);
         this.addSetting(this.panicThreshold);
         this.addSetting(this.rotationSpeed);
         this.addSetting(this.throwGap);
-        this.addSetting(this.cooldown);
+        this.addSetting(this.cooldownMax);
         this.addSetting(this.silent);
     }
 
     @Override
     public void onDisable() {
         this.cleanup();
+        this.state = State.IDLE;
     }
 
     @Override
@@ -57,6 +62,7 @@ public class AutoPot extends Module {
         float maxHp = this.mc.field_1724.method_6063();
         float hp = this.mc.field_1724.method_6032();
         float fraction = maxHp <= 0.0F ? 1.0F : hp / maxHp;
+        long now = System.currentTimeMillis();
 
         switch (this.state) {
             case IDLE:
@@ -67,65 +73,54 @@ public class AutoPot extends Module {
                 } else {
                     return;
                 }
-
-                this.potionSlot = this.findHealthPotSlot();
-                if (this.potionSlot == -1) {
+                if (this.findHealthPotSlot() == -1) {
                     this.throwsRemaining = 0;
                     return;
                 }
-
                 this.originalSlot = this.mc.field_1724.method_31548().method_67532();
                 this.startLookDown();
-                this.changeState(State.AIMING);
+                this.lastThrowTime = 0L;
+                this.state = State.ACTIVE;
                 break;
 
-            case AIMING:
-                if (RotationManager.getFinalPitch() >= 85.0F) {
-                    this.changeState(State.SWAPPING);
+            case ACTIVE:
+                int slot = this.throwsRemaining > 0 ? this.findHealthPotSlot() : -1;
+                boolean gapElapsed = now - this.lastThrowTime >= (long) this.throwGap.getValue();
+                boolean pitchReady = RotationManager.getFinalPitch() >= PITCH_THRESHOLD;
+
+                if (slot != -1 && gapElapsed && pitchReady) {
+                    this.hpAtLastThrow = hp;
+                    this.mc.field_1724.method_31548().method_61496(slot);
+                    ((MinecraftClientAccessor) this.mc).useItem();
+                    this.throwsRemaining--;
+                    this.lastThrowTime = now;
+                    break;
                 }
-                break;
 
-            case SWAPPING:
-                this.mc.field_1724.method_31548().method_61496(this.potionSlot);
-                this.changeState(State.THROWING);
-                break;
-
-            case THROWING:
-                ((MinecraftClientAccessor) this.mc).useItem();
-                this.throwsRemaining--;
-                this.changeState(State.THROW_GAP);
-                break;
-
-            case THROW_GAP:
-                if (System.currentTimeMillis() - this.stateEnteredAt < (long) this.throwGap.getValue()) {
-                    return;
+                if (this.throwsRemaining == 0 || slot == -1) {
+                    this.finishSequence(now);
                 }
-                if (this.throwsRemaining > 0) {
-                    this.potionSlot = this.findHealthPotSlot();
-                    if (this.potionSlot != -1) {
-                        this.changeState(State.SWAPPING);
-                        return;
-                    }
-                }
-                this.changeState(State.CLEANUP);
-                break;
-
-            case CLEANUP:
-                if (this.originalSlot != -1) {
-                    this.mc.field_1724.method_31548().method_61496(this.originalSlot);
-                }
-                RotationManager.clearTarget(this);
-                this.originalSlot = -1;
-                this.potionSlot = -1;
-                this.changeState(State.COOLDOWN);
                 break;
 
             case COOLDOWN:
-                if (System.currentTimeMillis() - this.stateEnteredAt >= (long) this.cooldown.getValue()) {
+                float healed = hp - this.hpAtLastThrow;
+                boolean recovered = healed >= HEAL_MARGIN;
+                boolean timedOut = now - this.cooldownStartedAt >= (long) this.cooldownMax.getValue();
+                if (recovered || timedOut) {
                     this.state = State.IDLE;
                 }
                 break;
         }
+    }
+
+    private void finishSequence(long now) {
+        if (this.originalSlot != -1) {
+            this.mc.field_1724.method_31548().method_61496(this.originalSlot);
+            this.originalSlot = -1;
+        }
+        RotationManager.clearTarget(this);
+        this.cooldownStartedAt = now;
+        this.state = State.COOLDOWN;
     }
 
     private void startLookDown() {
@@ -133,8 +128,6 @@ public class AutoPot extends Module {
                 this,
                 RotationManager.Priority.HIGH,
                 () -> {
-                    // Preserve current yaw and aim ~straight down. Small horizontal
-                    // offset keeps the yaw math stable; large -Y drives pitch to ~89.
                     float yaw = this.mc.field_1724.method_36454();
                     double rad = Math.toRadians(yaw);
                     double dx = -Math.sin(rad) * 0.05;
@@ -149,20 +142,14 @@ public class AutoPot extends Module {
                 false);
     }
 
-    private void changeState(State next) {
-        this.state = next;
-        this.stateEnteredAt = System.currentTimeMillis();
-    }
-
     private void cleanup() {
         if (this.originalSlot != -1 && this.mc.field_1724 != null) {
             this.mc.field_1724.method_31548().method_61496(this.originalSlot);
         }
         RotationManager.clearTarget(this);
-        this.state = State.IDLE;
-        this.potionSlot = -1;
         this.originalSlot = -1;
         this.throwsRemaining = 0;
+        this.lastThrowTime = 0L;
     }
 
     private int findHealthPotSlot() {
@@ -194,11 +181,7 @@ public class AutoPot extends Module {
     @Environment(EnvType.CLIENT)
     private static enum State {
         IDLE,
-        AIMING,
-        SWAPPING,
-        THROWING,
-        THROW_GAP,
-        CLEANUP,
+        ACTIVE,
         COOLDOWN;
     }
 }
