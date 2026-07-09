@@ -9,6 +9,7 @@ import com.slither.cyemer.shader.PostShaderManager;
 import com.slither.cyemer.util.LogCleaner;
 import com.slither.cyemer.util.RenderBackendDetector;
 import com.slither.cyemer.util.RotationManager;
+import com.slither.cyemer.util.streamproof.OverlayCoordinator;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
@@ -49,14 +50,30 @@ public class CyemerClient implements ClientModInitializer {
             Cyemer.getInstance().getModuleManager().onWorldRender(context.matrices(), tickDelta);
             this.renderPostEffects();
         });
-        HudRenderCallback.EVENT.register(new HUDRenderer());
-        HudRenderCallback.EVENT.register((HudRenderCallback)(drawContext, tickDelta) -> {
+        HudRenderCallback hudRenderer = new HUDRenderer();
+        HudRenderCallback.EVENT.register((drawContext, tickDelta) -> {
+            OverlayCoordinator.beginRedirect();
+            try {
+                hudRenderer.onHudRender(drawContext, tickDelta);
+            } finally {
+                OverlayCoordinator.endRedirect();
+            }
+        });
+        HudRenderCallback fakelagCallback = (drawContext, tickDelta) -> {
             Module mod = Cyemer.getInstance().getModuleManager().getModule("Fakelag");
             if (mod != null && mod.isEnabled()) {
                 try {
                     mod.getClass().getMethod("onHudRender", drawContext.getClass(), float.class).invoke(mod, drawContext, tickDelta);
                 } catch (Exception var4) {
                 }
+            }
+        };
+        HudRenderCallback.EVENT.register((drawContext, tickDelta) -> {
+            OverlayCoordinator.beginRedirect();
+            try {
+                fakelagCallback.onHudRender(drawContext, tickDelta);
+            } finally {
+                OverlayCoordinator.endRedirect();
             }
         });
         LogCleaner.clean();

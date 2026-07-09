@@ -4,20 +4,23 @@ import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import org.lwjgl.glfw.GLFW;
 import org.lwjgl.glfw.GLFWNativeCocoa;
+import org.lwjgl.opengl.GL;
+import org.lwjgl.opengl.GL30C;
 import org.lwjgl.system.MemoryStack;
 
 import java.nio.IntBuffer;
 
 /**
  * A second GLFW window that shadows the main Minecraft window. Shares its
- * GL context with the main window so textures and shaders are reachable
- * from both. On macOS the underlying NSWindow gets sharingType=None so
- * screen-capture tools (OBS, QuickTime, ScreenCaptureKit) skip it, while
- * the user still sees it composited on top of the game.
+ * GL context with the main window so textures created against the main
+ * context (in particular the OverlayFramebuffer's color attachment) are
+ * reachable from the overlay context.
  *
- * Phase 1: window exists, follows the main window's position/size, and
- * displays a solid clear-color each frame so OBS-blindness is visually
- * verifiable. Phase 2 will redirect the client's GUI content into it.
+ * Blit path: the overlay-side maintains its own FBO that attaches the
+ * same source texture as the main-side OverlayFramebuffer. Each frame we
+ * glBlitFramebuffer that FBO into the overlay window's default
+ * framebuffer, then swap. macOS gets sharingType=None so screen capture
+ * skips this window while the user sees it composited on top.
  */
 @Environment(EnvType.CLIENT)
 public final class OverlayWindow {
@@ -25,17 +28,12 @@ public final class OverlayWindow {
     private long parentHandle = 0L;
     private long nsWindow = 0L;
 
-    private float clearR = 1.0F;
-    private float clearG = 0.15F;
-    private float clearB = 0.4F;
-    private float clearA = 0.35F;
+    private int overlayReadFbo = 0;
+    private int lastAttachedTexture = 0;
+    private boolean overlayGlInitialized = false;
 
     public boolean create(long parentGlfwWindow) {
         if (this.handle != 0L) return true;
-        if (!MacOSCapture.isAvailable()) {
-            System.err.println("[cyemer/streamproof] not on macOS — capture-exclusion cannot be applied");
-        }
-
         this.parentHandle = parentGlfwWindow;
         long previousContext = GLFW.glfwGetCurrentContext();
 
@@ -51,7 +49,6 @@ public final class OverlayWindow {
             GLFW.glfwWindowHint(GLFW.GLFW_FLOATING, GLFW.GLFW_TRUE);
             GLFW.glfwWindowHint(GLFW.GLFW_FOCUS_ON_SHOW, GLFW.GLFW_FALSE);
             GLFW.glfwWindowHint(GLFW.GLFW_RESIZABLE, GLFW.GLFW_FALSE);
-            // Mirror the main window's GL context version (MC 1.21+ uses 3.2 core).
             GLFW.glfwWindowHint(GLFW.GLFW_CONTEXT_VERSION_MAJOR, 3);
             GLFW.glfwWindowHint(GLFW.GLFW_CONTEXT_VERSION_MINOR, 2);
             GLFW.glfwWindowHint(GLFW.GLFW_OPENGL_PROFILE, GLFW.GLFW_OPENGL_CORE_PROFILE);
@@ -69,7 +66,6 @@ public final class OverlayWindow {
         this.nsWindow = GLFWNativeCocoa.glfwGetCocoaWindow(this.handle);
         MacOSCapture.excludeFromCapture(this.nsWindow);
         MacOSCapture.setIgnoresMouseEvents(this.nsWindow, true);
-        // NSStatusWindowLevel keeps the overlay above ordinary windows.
         MacOSCapture.setWindowLevel(this.nsWindow, 25L);
 
         this.syncGeometry();
@@ -93,27 +89,51 @@ public final class OverlayWindow {
     }
 
     /**
-     * Phase 1 render: switch to the overlay context, paint a translucent
-     * test color so the user can see the overlay layer exists, swap, and
-     * restore the previous context. Nothing here uses MC's DrawContext.
+     * Blit an FBO (identified by its color texture) to the overlay window's
+     * default framebuffer. Must be called from the main GL context; we'll
+     * temporarily make the overlay context current for the blit.
      */
-    public void renderTestFrame() {
-        if (this.handle == 0L) return;
-        long previous = GLFW.glfwGetCurrentContext();
-        GLFW.glfwMakeContextCurrent(this.handle);
+    public void blitFrom(int sourceTextureId, int srcWidth, int srcHeight) {
+        if (this.handle == 0L || sourceTextureId == 0) return;
 
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            IntBuffer fbw = stack.mallocInt(1);
-            IntBuffer fbh = stack.mallocInt(1);
-            GLFW.glfwGetFramebufferSize(this.handle, fbw, fbh);
-            org.lwjgl.opengl.GL30C.glViewport(0, 0, fbw.get(0), fbh.get(0));
+        long previousContext = GLFW.glfwGetCurrentContext();
+        GLFW.glfwMakeContextCurrent(this.handle);
+        if (!this.overlayGlInitialized) {
+            GL.createCapabilities();
+            this.overlayReadFbo = GL30C.glGenFramebuffers();
+            this.overlayGlInitialized = true;
         }
 
-        org.lwjgl.opengl.GL30C.glClearColor(this.clearR, this.clearG, this.clearB, this.clearA);
-        org.lwjgl.opengl.GL30C.glClear(org.lwjgl.opengl.GL30C.GL_COLOR_BUFFER_BIT);
+        // Re-attach the source texture if it changed (recreated on resize).
+        if (this.lastAttachedTexture != sourceTextureId) {
+            GL30C.glBindFramebuffer(GL30C.GL_READ_FRAMEBUFFER, this.overlayReadFbo);
+            GL30C.glFramebufferTexture2D(GL30C.GL_READ_FRAMEBUFFER, GL30C.GL_COLOR_ATTACHMENT0,
+                    GL30C.GL_TEXTURE_2D, sourceTextureId, 0);
+            this.lastAttachedTexture = sourceTextureId;
+        }
+
+        int fbw;
+        int fbh;
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            IntBuffer bw = stack.mallocInt(1);
+            IntBuffer bh = stack.mallocInt(1);
+            GLFW.glfwGetFramebufferSize(this.handle, bw, bh);
+            fbw = bw.get(0);
+            fbh = bh.get(0);
+        }
+
+        GL30C.glBindFramebuffer(GL30C.GL_READ_FRAMEBUFFER, this.overlayReadFbo);
+        GL30C.glBindFramebuffer(GL30C.GL_DRAW_FRAMEBUFFER, 0);
+        GL30C.glViewport(0, 0, fbw, fbh);
+        GL30C.glClearColor(0.0F, 0.0F, 0.0F, 0.0F);
+        GL30C.glClear(GL30C.GL_COLOR_BUFFER_BIT);
+        GL30C.glBlitFramebuffer(
+                0, 0, srcWidth, srcHeight,
+                0, 0, fbw, fbh,
+                GL30C.GL_COLOR_BUFFER_BIT, GL30C.GL_LINEAR);
         GLFW.glfwSwapBuffers(this.handle);
 
-        GLFW.glfwMakeContextCurrent(previous);
+        GLFW.glfwMakeContextCurrent(previousContext);
     }
 
     public void destroy() {
@@ -127,6 +147,9 @@ public final class OverlayWindow {
         this.handle = 0L;
         this.nsWindow = 0L;
         this.parentHandle = 0L;
+        this.overlayReadFbo = 0;
+        this.lastAttachedTexture = 0;
+        this.overlayGlInitialized = false;
     }
 
     public boolean isAlive() {
@@ -135,9 +158,5 @@ public final class OverlayWindow {
 
     public long getHandle() {
         return this.handle;
-    }
-
-    public long getNsWindow() {
-        return this.nsWindow;
     }
 }
