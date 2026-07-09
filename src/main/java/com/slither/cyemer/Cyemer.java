@@ -4,13 +4,11 @@ import com.slither.cyemer.config.ConfigManager;
 import com.slither.cyemer.hud.ClientEventHandler;
 import com.slither.cyemer.hud.HUDManager;
 import com.slither.cyemer.manager.ModuleManager;
-import com.slither.cyemer.util.streamproof.OverlayCoordinator;
 import java.util.Timer;
 import java.util.TimerTask;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
-import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.minecraft.class_310;
 
 @Environment(EnvType.CLIENT)
@@ -30,10 +28,6 @@ public class Cyemer implements ClientModInitializer {
         this.configManager = new ConfigManager();
         this.hudManager = HUDManager.getInstance();
         ClientEventHandler.init();
-        // Registered from this entrypoint (fires before CyemerClient's) so it runs
-        // first each frame: blit prev frame's FBO to the overlay and clear the FBO
-        // before this frame's cyemer redirects.
-        HudRenderCallback.EVENT.register((drawContext, tickDelta) -> OverlayCoordinator.blitAndClearForFrame());
         this.configManager.load("default");
         this.startMsTimer();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
