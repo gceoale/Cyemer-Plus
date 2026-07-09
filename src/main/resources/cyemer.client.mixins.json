@@ -18,6 +18,7 @@
     "MouseMixin",
     "PlayerListEntryMixin",
     "SimpleOptionAccessor",
+    "StreamProofPresentMixin",
     "WindowMixin"
   ],
   "injectors": {
