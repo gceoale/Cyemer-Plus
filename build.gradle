@@ -29,6 +29,10 @@ dependencies {
 
 	implementation "org.xerial:sqlite-jdbc:${project.sqlite_jdbc_version}"
 	include "org.xerial:sqlite-jdbc:${project.sqlite_jdbc_version}"
+
+	// JNA — needed for the macOS Cocoa capture-exclusion bridge in util/streamproof.
+	implementation "net.java.dev.jna:jna:${project.jna_version}"
+	include "net.java.dev.jna:jna:${project.jna_version}"
 }
 
 processResources {

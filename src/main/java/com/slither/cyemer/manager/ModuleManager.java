@@ -32,6 +32,7 @@ import com.slither.cyemer.module.implementation.PearlCatch;
 import com.slither.cyemer.module.implementation.Prevent;
 import com.slither.cyemer.module.implementation.SelfDestruct;
 import com.slither.cyemer.module.implementation.Sprint;
+import com.slither.cyemer.module.implementation.StreamProof;
 import com.slither.cyemer.module.implementation.StreamerModeModule;
 import com.slither.cyemer.module.implementation.TargetEffect;
 import com.slither.cyemer.module.implementation.ViewModel;
@@ -152,6 +153,7 @@ public class ModuleManager {
         this.modules.add(new AutoGG());
         this.modules.add(new PotRefill());
         this.modules.add(new NPotRefill());
+        this.modules.add(new StreamProof());
     }
 
     public void onTick() {
