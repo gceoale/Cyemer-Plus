@@ -2,63 +2,34 @@ package com.slither.cyemer.module.implementation;
 
 import com.slither.cyemer.module.Category;
 import com.slither.cyemer.module.Module;
-import com.slither.cyemer.util.streamproof.MacOSCapture;
+import com.slither.cyemer.util.streamproof.StreamProofPresenter;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
-import net.minecraft.class_437;
-import org.lwjgl.glfw.GLFWNativeCocoa;
+import net.minecraft.class_310;
 
 /**
- * Whole-window blackout while a cyemer screen is open. Not surgical -
- * everything in the MC window goes dark in OBS for as long as the
- * ClickGUI (or any com.slither.cyemer.* screen) is up. It's the only
- * approach that works on MC 1.21.11 without reimplementing the new
- * GpuDevice / CommandEncoder / presentTexture pipeline, which is where
- * the actual "backbuffer" now lives - raw OpenGL FB 0 is no longer what
- * MC presents to the window.
+ * Toggles the surgical present-time substitution. When enabled and a
+ * cyemer screen is up, the OBS-visible main window shows the last
+ * "no cyemer" snapshot while the user sees the live game + ClickGUI
+ * via a capture-excluded overlay window.
  */
 @Environment(EnvType.CLIENT)
 public class StreamProof extends Module {
-    private boolean hiding = false;
-    private long cachedNsWindow = 0L;
-
     public StreamProof() {
         super("StreamProof",
-                "Blacks out the whole MC window in OBS while a cyemer screen is open.",
+                "Freezes OBS on the pre-open frame while a cyemer screen is up; you keep seeing the live game + GUI via a capture-excluded overlay.",
                 Category.CLIENT);
     }
 
     @Override
-    public void onDisable() {
-        if (this.hiding && this.cachedNsWindow != 0L) {
-            MacOSCapture.restoreCapture(this.cachedNsWindow);
-            this.hiding = false;
-        }
+    public void onEnable() {
+        class_310 mc = class_310.method_1551();
+        if (mc == null || mc.method_22683() == null) return;
+        StreamProofPresenter.enable(mc.method_22683().method_4490());
     }
 
     @Override
-    public void onTick() {
-        if (this.mc == null || this.mc.method_22683() == null) return;
-        if (this.cachedNsWindow == 0L) {
-            long glfwHandle = this.mc.method_22683().method_4490();
-            if (glfwHandle == 0L) return;
-            this.cachedNsWindow = GLFWNativeCocoa.glfwGetCocoaWindow(glfwHandle);
-            if (this.cachedNsWindow == 0L) return;
-        }
-
-        class_437 screen = this.mc.field_1755;
-        boolean shouldHide = screen != null && this.isCyemerScreen(screen);
-
-        if (shouldHide && !this.hiding) {
-            MacOSCapture.excludeFromCapture(this.cachedNsWindow);
-            this.hiding = true;
-        } else if (!shouldHide && this.hiding) {
-            MacOSCapture.restoreCapture(this.cachedNsWindow);
-            this.hiding = false;
-        }
-    }
-
-    private boolean isCyemerScreen(class_437 screen) {
-        return screen.getClass().getName().startsWith("com.slither.cyemer.");
+    public void onDisable() {
+        StreamProofPresenter.disable();
     }
 }

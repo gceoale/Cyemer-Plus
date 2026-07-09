@@ -17,6 +17,7 @@
     "MinecraftClientMixin",
     "MouseMixin",
     "PlayerListEntryMixin",
+    "PresentTextureMixin",
     "SimpleOptionAccessor",
     "WindowMixin"
   ],
