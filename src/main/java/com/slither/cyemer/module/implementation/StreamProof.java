@@ -2,57 +2,64 @@ package com.slither.cyemer.module.implementation;
 
 import com.slither.cyemer.module.Category;
 import com.slither.cyemer.module.Module;
-import com.slither.cyemer.util.streamproof.OverlayWindow;
+import com.slither.cyemer.util.streamproof.MacOSCapture;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
-import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
-import net.minecraft.class_310;
+import net.minecraft.class_437;
+import org.lwjgl.glfw.GLFWNativeCocoa;
 
 /**
- * Phase 1 - creates the OBS-invisible overlay window with a translucent
- * test tint so the capture-exclusion is visually verifiable. Phase 2
- * (routing cyemer's actual GUI through the overlay) is blocked on MC
- * 1.21.11's deferred GUI renderer; the naive FBO-around-callback trick
- * doesn't work because class_332 draws are queued into class_11246 and
- * flushed elsewhere.
+ * Quick-and-dirty capture blackout: when a cyemer screen is open, flip
+ * the Minecraft main window's NSWindow sharingType to None so OBS can't
+ * capture it. The whole game goes dark in OBS for the duration - not
+ * surgical, but it's fast to do and it works on 1.21.11 without wrestling
+ * the deferred GUI renderer.
+ *
+ * Detection is by class package (com.slither.cyemer.*) so vanilla screens
+ * (inventory, pause menu, chat) and other mods' screens don't trigger it.
  */
 @Environment(EnvType.CLIENT)
 public class StreamProof extends Module {
-    private static final OverlayWindow OVERLAY = new OverlayWindow();
-    private static boolean callbackRegistered = false;
+    private boolean hiding = false;
+    private long cachedNsWindow = 0L;
 
     public StreamProof() {
         super("StreamProof",
-                "Hides an overlay window from OBS. Currently phase 1 - shows a test tint; real GUI redirect is still in the oven.",
+                "Blacks out the whole MC window in OBS while a cyemer screen is open.",
                 Category.CLIENT);
     }
 
     @Override
-    public void onEnable() {
-        class_310 mc = class_310.method_1551();
-        if (mc == null || mc.method_22683() == null) {
-            return;
+    public void onDisable() {
+        if (this.hiding && this.cachedNsWindow != 0L) {
+            MacOSCapture.restoreCapture(this.cachedNsWindow);
+            this.hiding = false;
         }
-        if (!OVERLAY.isAlive()) {
-            OVERLAY.create(mc.method_22683().method_4490());
-        }
-        registerCallback();
     }
 
     @Override
-    public void onDisable() {
-        if (OVERLAY.isAlive()) {
-            OVERLAY.destroy();
+    public void onTick() {
+        if (this.mc == null || this.mc.method_22683() == null) return;
+        if (this.cachedNsWindow == 0L) {
+            long glfwHandle = this.mc.method_22683().method_4490();
+            if (glfwHandle == 0L) return;
+            this.cachedNsWindow = GLFWNativeCocoa.glfwGetCocoaWindow(glfwHandle);
+            if (this.cachedNsWindow == 0L) return;
+        }
+
+        class_437 screen = this.mc.field_1755;
+        boolean shouldHide = screen != null && this.isCyemerScreen(screen);
+
+        if (shouldHide && !this.hiding) {
+            MacOSCapture.excludeFromCapture(this.cachedNsWindow);
+            this.hiding = true;
+        } else if (!shouldHide && this.hiding) {
+            MacOSCapture.restoreCapture(this.cachedNsWindow);
+            this.hiding = false;
         }
     }
 
-    private static void registerCallback() {
-        if (callbackRegistered) return;
-        callbackRegistered = true;
-        HudRenderCallback.EVENT.register((drawContext, tickDelta) -> {
-            if (!OVERLAY.isAlive()) return;
-            OVERLAY.syncGeometry();
-            OVERLAY.renderTestFrame();
-        });
+    private boolean isCyemerScreen(class_437 screen) {
+        return screen.getClass().getName().startsWith("com.slither.cyemer.");
     }
 }
