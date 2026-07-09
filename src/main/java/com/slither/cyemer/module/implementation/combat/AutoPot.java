@@ -23,8 +23,7 @@ public class AutoPot extends Module {
     private static final float PITCH_THRESHOLD = 85.0F;
     private static final float HEAL_MARGIN = 0.5F;
 
-    private final SliderSetting healThreshold = new SliderSetting("Heal Threshold", 0.625, 0.0, 1.0, 3);
-    private final SliderSetting panicThreshold = new SliderSetting("Panic Threshold", 0.25, 0.0, 1.0, 3);
+    private final SliderSetting threshold = new SliderSetting("Threshold", 0.625, 0.0, 1.0, 3);
     private final SliderSetting rotationSpeed = new SliderSetting("Rotation Speed", 20.0, 1.0, 20.0, 1);
     private final SliderSetting throwGap = new SliderSetting("Throw Gap (ms)", 50.0, 0.0, 500.0, 0);
     private final SliderSetting cooldownMax = new SliderSetting("Cooldown Max (ms)", 1500.0, 100.0, 3000.0, 0);
@@ -38,9 +37,8 @@ public class AutoPot extends Module {
     private float hpAtLastThrow = 0.0F;
 
     public AutoPot() {
-        super("AutoPot", "FPS-lookdown health pot with panic double-throw. Waits for the heal to register before firing again.", Category.COMBAT);
-        this.addSetting(this.healThreshold);
-        this.addSetting(this.panicThreshold);
+        super("AutoPot", "FPS lookdown, throws two instant-health splash pots when hp drops below the threshold.", Category.COMBAT);
+        this.addSetting(this.threshold);
         this.addSetting(this.rotationSpeed);
         this.addSetting(this.throwGap);
         this.addSetting(this.cooldownMax);
@@ -66,17 +64,13 @@ public class AutoPot extends Module {
 
         switch (this.state) {
             case IDLE:
-                if (fraction <= this.panicThreshold.getValue()) {
-                    this.throwsRemaining = 2;
-                } else if (fraction <= this.healThreshold.getValue()) {
-                    this.throwsRemaining = 1;
-                } else {
+                if (fraction > this.threshold.getValue()) {
                     return;
                 }
                 if (this.findHealthPotSlot() == -1) {
-                    this.throwsRemaining = 0;
                     return;
                 }
+                this.throwsRemaining = 2;
                 this.originalSlot = this.mc.field_1724.method_31548().method_67532();
                 this.startLookDown();
                 this.lastThrowTime = 0L;
