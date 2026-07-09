@@ -96,6 +96,10 @@ public final class OverlayWindow {
     public void blitFromGlTexture(int glTextureId, int srcWidth, int srcHeight) {
         if (this.handle == 0L || glTextureId == 0) return;
         long previousContext = GLFW.glfwGetCurrentContext();
+        // Flush the main context's writes so the shared texture actually has
+        // the frame content before we start reading it from the overlay
+        // context. Without this we can see stale / uninitialized pixels.
+        GL30C.glFlush();
         GLFW.glfwMakeContextCurrent(this.handle);
         if (!this.overlayGlInitialized) {
             GL.createCapabilities();
