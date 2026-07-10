@@ -128,10 +128,10 @@ public final class OverlayWindow {
         GL30C.glViewport(0, 0, fbw, fbh);
         GL30C.glClearColor(0.0F, 0.0F, 0.0F, 0.0F);
         GL30C.glClear(GL30C.GL_COLOR_BUFFER_BIT);
-        // GL blit uses bottom-left origin; MC's texture is top-left. Flip Y by
-        // swapping the source Y coordinates.
+        // MC's render target already stores content in GL's bottom-left origin,
+        // so no Y-flip needed on the blit.
         GL30C.glBlitFramebuffer(
-                0, srcHeight, srcWidth, 0,
+                0, 0, srcWidth, srcHeight,
                 0, 0, fbw, fbh,
                 GL30C.GL_COLOR_BUFFER_BIT, GL30C.GL_LINEAR);
         GLFW.glfwSwapBuffers(this.handle);

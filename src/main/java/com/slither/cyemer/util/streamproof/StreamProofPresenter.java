@@ -40,7 +40,6 @@ public final class StreamProofPresenter {
 
     // Reflection cache for class_10868.field_57882 (raw GL texture id).
     private static Field glIdField = null;
-    private static boolean loggedTextureShape = false;
 
     private StreamProofPresenter() {}
 
@@ -93,10 +92,6 @@ public final class StreamProofPresenter {
             // Show the live main to the user via the overlay window (macOS
             // sharingType=None -> OBS can't see it).
             int glId = extractGlId(liveTex);
-            if (!loggedTextureShape) {
-                loggedTextureShape = true;
-                logTextureShape(liveTex, glId);
-            }
             if (glId > 0) {
                 OVERLAY.syncGeometry();
                 OVERLAY.setVisible(true);
@@ -167,27 +162,6 @@ public final class StreamProofPresenter {
             }
         } catch (Throwable ignored) {}
         return null;
-    }
-
-    private static void logTextureShape(GpuTexture tex, int glId) {
-        System.out.println("[cyemer/streamproof] live texture class=" + tex.getClass().getName()
-                + " glId=" + glId
-                + " size=" + tex.getWidth(0) + "x" + tex.getHeight(0)
-                + " format=" + tex.getFormat());
-        System.out.println("[cyemer/streamproof] int fields on class:");
-        for (Field f : tex.getClass().getDeclaredFields()) {
-            if (f.getType() == int.class) {
-                try {
-                    f.setAccessible(true);
-                    int mod = f.getModifiers();
-                    boolean isStatic = java.lang.reflect.Modifier.isStatic(mod);
-                    System.out.println("  " + (isStatic ? "static " : "") + f.getName()
-                            + " = " + (isStatic ? f.getInt(null) : f.getInt(tex)));
-                } catch (Throwable t) {
-                    System.out.println("  " + f.getName() + " (unreadable: " + t + ")");
-                }
-            }
-        }
     }
 
     private static int extractGlId(GpuTexture tex) {
