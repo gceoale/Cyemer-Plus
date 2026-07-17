@@ -12,6 +12,7 @@ import java.util.HashSet;
 import java.util.Set;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.minecraft.class_1268;
 import net.minecraft.class_1792;
 import net.minecraft.class_1802;
 import net.minecraft.class_2246;
@@ -19,7 +20,9 @@ import net.minecraft.class_2338;
 import net.minecraft.class_2350;
 import net.minecraft.class_243;
 import net.minecraft.class_2680;
+import net.minecraft.class_310;
 import net.minecraft.class_3532;
+import net.minecraft.class_3675;
 import net.minecraft.class_3965;
 import net.minecraft.class_4969;
 
@@ -35,6 +38,10 @@ public class AutoAnchor extends Module {
     private final SliderSetting rotationStrength = new SliderSetting("Rotation Strength", 10.0, 1.0, 20.0, 1);
     private final ModeSetting rotPattern = new ModeSetting("Pattern", "Sine", "Smooth", "Linear", "Instant");
     private final SliderSetting rotJitter = new SliderSetting("Jitter", 0.1, 0.0, 1.0, 2);
+    // GLFW keycode. -1 disables. On press-edge, places an anchor at the player's
+    // crosshair and enters the existing state machine at ROTATING_TO_FILL - which
+    // then charges, drops the safe-mode shield (if Safe Mode is on), and detonates.
+    private final SliderSetting safeAnchorKey = new SliderSetting("Safe Anchor Key", -1, -1, 400, 0);
     private static final double REACH_DISTANCE_SQ = 25.0;
     private static final long COOLDOWN_MS = 400L;
     private static final long TIMEOUT_MS = 1250L;
@@ -52,6 +59,7 @@ public class AutoAnchor extends Module {
     private long lastRenderExecTime = 0L;
     private final Set<class_2338> placedAnchors = new HashSet<>();
     private class_2680 cachedAnchorState = null;
+    private boolean safeKeyWasHeld = false;
 
     public AutoAnchor() {
         super("AutoAnchor", "Fills and explodes anchors with randomized patterns.", Category.COMBAT);
@@ -65,6 +73,7 @@ public class AutoAnchor extends Module {
         this.addSetting(this.rotationStrength);
         this.addSetting(this.rotPattern);
         this.addSetting(this.rotJitter);
+        this.addSetting(this.safeAnchorKey);
     }
 
     @Override
@@ -110,6 +119,8 @@ public class AutoAnchor extends Module {
     @Override
     public void onTick() {
         if (this.mc.field_1724 != null && this.mc.field_1687 != null) {
+            this.handleSafeAnchorKey();
+
             if (!this.speedMode.isEnabled()) {
                 this.updateLogic();
             }
@@ -122,6 +133,42 @@ public class AutoAnchor extends Module {
                 }
             }
         }
+    }
+
+    private void handleSafeAnchorKey() {
+        int keyCode = (int) this.safeAnchorKey.getValue();
+        if (keyCode <= 0 || this.mc.field_1761 == null) {
+            this.safeKeyWasHeld = false;
+            return;
+        }
+        boolean held = class_3675.method_15987(class_310.method_1551().method_22683(), keyCode);
+        boolean edge = held && !this.safeKeyWasHeld;
+        this.safeKeyWasHeld = held;
+
+        if (!edge || this.currentState != AutoAnchor.State.IDLE) return;
+        if (!(this.mc.field_1765 instanceof class_3965 blockHit)) return;
+
+        class_2338 clickedPos = blockHit.method_17777();
+        class_2350 side = blockHit.method_17780();
+        class_2338 anchorTarget = clickedPos.method_10093(side);
+
+        // Must be a replaceable spot; player must have an anchor to place.
+        if (!this.mc.field_1687.method_8320(anchorTarget).method_45474()) return;
+        int anchorSlot = this.findItemInHotbar(class_1802.field_23141);
+        if (anchorSlot == -1) return;
+
+        int origSlot = this.mc.field_1724.method_31548().method_67532();
+        this.mc.field_1724.method_31548().method_61496(anchorSlot);
+        this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808, blockHit);
+        this.mc.field_1724.method_31548().method_61496(origSlot);
+
+        // Prime the existing state machine so it charges + safe-shields + detonates.
+        this.placedAnchors.add(anchorTarget);
+        this.anchorPos = anchorTarget;
+        this.originalSlot = origSlot;
+        this.resetTimer();
+        this.startRotatingToAnchor();
+        this.currentState = AutoAnchor.State.ROTATING_TO_FILL;
     }
 
     private long getSpeedModeDelay() {
