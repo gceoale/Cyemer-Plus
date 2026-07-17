@@ -6,6 +6,7 @@ import com.slither.cyemer.module.Category;
 import com.slither.cyemer.module.ModeSetting;
 import com.slither.cyemer.module.Module;
 import com.slither.cyemer.module.SliderSetting;
+import com.slither.cyemer.module.implementation.KeybindSetting;
 import com.slither.cyemer.util.RotationManager;
 import com.slither.cyemer.util.SystemInputSimulator;
 import java.util.HashSet;
@@ -38,10 +39,9 @@ public class AutoAnchor extends Module {
     private final SliderSetting rotationStrength = new SliderSetting("Rotation Strength", 10.0, 1.0, 20.0, 1);
     private final ModeSetting rotPattern = new ModeSetting("Pattern", "Sine", "Smooth", "Linear", "Instant");
     private final SliderSetting rotJitter = new SliderSetting("Jitter", 0.1, 0.0, 1.0, 2);
-    // GLFW keycode. -1 disables. On press-edge, places an anchor at the player's
-    // crosshair and enters the existing state machine at ROTATING_TO_FILL - which
-    // then charges, drops the safe-mode shield (if Safe Mode is on), and detonates.
-    private final SliderSetting safeAnchorKey = new SliderSetting("Safe Anchor Key", -1, -1, 400, 0);
+    // Standalone keybind - click to rebind, right-click to clear. While held,
+    // runs the packet-based safe anchor cycle at 5/s (one action per tick).
+    private final KeybindSetting safeAnchorKey = new KeybindSetting("Safe Anchor Key");
     private static final double REACH_DISTANCE_SQ = 25.0;
     private static final long COOLDOWN_MS = 400L;
     private static final long TIMEOUT_MS = 1250L;
@@ -142,7 +142,7 @@ public class AutoAnchor extends Module {
     }
 
     private void handleSafeAnchorKey() {
-        int keyCode = (int) this.safeAnchorKey.getValue();
+        int keyCode = this.safeAnchorKey.getKeyCode();
         if (keyCode <= 0 || this.mc.field_1761 == null) {
             this.abortSafeKeyCycle();
             return;

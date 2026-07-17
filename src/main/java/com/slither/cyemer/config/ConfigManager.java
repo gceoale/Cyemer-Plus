@@ -13,6 +13,7 @@ import com.slither.cyemer.hud.HUDElement;
 import com.slither.cyemer.module.BooleanSetting;
 import com.slither.cyemer.module.ColorSetting;
 import com.slither.cyemer.module.ModeSetting;
+import com.slither.cyemer.module.implementation.KeybindSetting;
 import com.slither.cyemer.module.Module;
 import com.slither.cyemer.module.Setting;
 import com.slither.cyemer.module.SliderSetting;
@@ -243,6 +244,8 @@ public class ConfigManager {
             jsonObject.addProperty(s.getName(), s.isEnabled());
         } else if (setting instanceof StringSetting s) {
             jsonObject.addProperty(s.getName(), s.getValue());
+        } else if (setting instanceof KeybindSetting s && s.isStandalone()) {
+            jsonObject.addProperty(s.getName(), s.getKeyCode());
         }
     }
 
@@ -260,6 +263,8 @@ public class ConfigManager {
                     s.setEnabled(jsonObject.get(settingKey).getAsBoolean());
                 } else if (setting instanceof StringSetting s) {
                     s.setValue(jsonObject.get(settingKey).getAsString());
+                } else if (setting instanceof KeybindSetting s && s.isStandalone()) {
+                    s.setKeyCode(jsonObject.get(settingKey).getAsInt());
                 }
             } catch (Exception var9) {
             }
