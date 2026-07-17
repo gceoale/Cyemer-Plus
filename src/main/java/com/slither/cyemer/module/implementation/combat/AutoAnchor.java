@@ -59,7 +59,13 @@ public class AutoAnchor extends Module {
     private long lastRenderExecTime = 0L;
     private final Set<class_2338> placedAnchors = new HashSet<>();
     private class_2680 cachedAnchorState = null;
-    private boolean safeKeyWasHeld = false;
+
+    // Independent packet-based state machine driven by the safe key. One
+    // action per tick -> a full place/charge/shield/detonate cycle takes
+    // 4 ticks = 200 ms, so 5 cycles/second when the key is held.
+    private SafeKeyState safeKeyState = SafeKeyState.IDLE;
+    private class_2338 safeKeyAnchorPos = null;
+    private int safeKeyOriginalSlot = -1;
 
     public AutoAnchor() {
         super("AutoAnchor", "Fills and explodes anchors with randomized patterns.", Category.COMBAT);
@@ -138,37 +144,163 @@ public class AutoAnchor extends Module {
     private void handleSafeAnchorKey() {
         int keyCode = (int) this.safeAnchorKey.getValue();
         if (keyCode <= 0 || this.mc.field_1761 == null) {
-            this.safeKeyWasHeld = false;
+            this.abortSafeKeyCycle();
             return;
         }
         boolean held = class_3675.method_15987(class_310.method_1551().method_22683(), keyCode);
-        boolean edge = held && !this.safeKeyWasHeld;
-        this.safeKeyWasHeld = held;
+        if (!held) {
+            this.abortSafeKeyCycle();
+            return;
+        }
 
-        if (!edge || this.currentState != AutoAnchor.State.IDLE) return;
+        switch (this.safeKeyState) {
+            case IDLE:
+                this.safeKeyPlaceAnchor();
+                break;
+            case CHARGE:
+                this.safeKeyChargeAnchor();
+                break;
+            case SHIELD:
+                this.safeKeyPlaceShield();
+                break;
+            case DETONATE:
+                this.safeKeyDetonate();
+                break;
+        }
+    }
+
+    private void safeKeyPlaceAnchor() {
         if (!(this.mc.field_1765 instanceof class_3965 blockHit)) return;
-
-        class_2338 clickedPos = blockHit.method_17777();
-        class_2350 side = blockHit.method_17780();
-        class_2338 anchorTarget = clickedPos.method_10093(side);
-
-        // Must be a replaceable spot; player must have an anchor to place.
+        class_2338 anchorTarget = blockHit.method_17777().method_10093(blockHit.method_17780());
         if (!this.mc.field_1687.method_8320(anchorTarget).method_45474()) return;
         int anchorSlot = this.findItemInHotbar(class_1802.field_23141);
         if (anchorSlot == -1) return;
 
-        int origSlot = this.mc.field_1724.method_31548().method_67532();
+        if (this.safeKeyOriginalSlot == -1) {
+            this.safeKeyOriginalSlot = this.mc.field_1724.method_31548().method_67532();
+        }
         this.mc.field_1724.method_31548().method_61496(anchorSlot);
         this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808, blockHit);
-        this.mc.field_1724.method_31548().method_61496(origSlot);
+        this.safeKeyAnchorPos = anchorTarget;
+        this.safeKeyState = SafeKeyState.CHARGE;
+    }
 
-        // Prime the existing state machine so it charges + safe-shields + detonates.
-        this.placedAnchors.add(anchorTarget);
-        this.anchorPos = anchorTarget;
-        this.originalSlot = origSlot;
-        this.resetTimer();
-        this.startRotatingToAnchor();
-        this.currentState = AutoAnchor.State.ROTATING_TO_FILL;
+    private void safeKeyChargeAnchor() {
+        if (this.safeKeyAnchorPos == null) {
+            this.safeKeyState = SafeKeyState.IDLE;
+            return;
+        }
+        int glowSlot = this.findItemInHotbar(class_1802.field_8801);
+        if (glowSlot == -1) {
+            this.safeKeyState = SafeKeyState.SHIELD;
+            return;
+        }
+        this.mc.field_1724.method_31548().method_61496(glowSlot);
+        this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808,
+                this.hitAt(this.safeKeyAnchorPos, class_2350.field_11036));
+        this.safeKeyState = SafeKeyState.SHIELD;
+    }
+
+    private void safeKeyPlaceShield() {
+        if (this.safeKeyAnchorPos == null) {
+            this.safeKeyState = SafeKeyState.DETONATE;
+            return;
+        }
+        int shieldSlot = this.findItemInHotbar(class_1802.field_8801);
+        if (shieldSlot == -1) {
+            this.safeKeyState = SafeKeyState.DETONATE;
+            return;
+        }
+        class_2338 shieldPos = this.safeKeyShieldPos(this.safeKeyAnchorPos);
+        if (shieldPos == null || !this.mc.field_1687.method_8320(shieldPos).method_45474()) {
+            this.safeKeyState = SafeKeyState.DETONATE;
+            return;
+        }
+        class_2338 placeAgainst = this.safeKeyAdjacentSolid(shieldPos);
+        if (placeAgainst == null) {
+            this.safeKeyState = SafeKeyState.DETONATE;
+            return;
+        }
+        class_2350 face = class_2350.method_10147(
+                shieldPos.method_10263() - placeAgainst.method_10263(),
+                shieldPos.method_10264() - placeAgainst.method_10264(),
+                shieldPos.method_10260() - placeAgainst.method_10260()
+        );
+        if (face == null) {
+            this.safeKeyState = SafeKeyState.DETONATE;
+            return;
+        }
+        this.mc.field_1724.method_31548().method_61496(shieldSlot);
+        this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808, this.hitAt(placeAgainst, face));
+        this.safeKeyState = SafeKeyState.DETONATE;
+    }
+
+    private void safeKeyDetonate() {
+        if (this.safeKeyAnchorPos == null) {
+            this.safeKeyState = SafeKeyState.IDLE;
+            return;
+        }
+        // Switch to something non-glowstone so the interact detonates instead of charging.
+        int restoreSlot = this.safeKeyOriginalSlot != -1 ? this.safeKeyOriginalSlot : this.findNonGlowstoneSlot();
+        if (restoreSlot != -1) {
+            this.mc.field_1724.method_31548().method_61496(restoreSlot);
+        }
+        this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808,
+                this.hitAt(this.safeKeyAnchorPos, class_2350.field_11036));
+        this.safeKeyAnchorPos = null;
+        this.safeKeyState = SafeKeyState.IDLE;
+    }
+
+    private void abortSafeKeyCycle() {
+        if (this.safeKeyState == SafeKeyState.IDLE && this.safeKeyOriginalSlot == -1) return;
+        if (this.safeKeyOriginalSlot != -1 && this.mc.field_1724 != null) {
+            this.mc.field_1724.method_31548().method_61496(this.safeKeyOriginalSlot);
+        }
+        this.safeKeyOriginalSlot = -1;
+        this.safeKeyAnchorPos = null;
+        this.safeKeyState = SafeKeyState.IDLE;
+    }
+
+    private class_3965 hitAt(class_2338 blockPos, class_2350 face) {
+        class_243 hit = new class_243(
+                blockPos.method_10263() + 0.5 + face.method_10148() * 0.5,
+                blockPos.method_10264() + 0.5 + face.method_10164() * 0.5,
+                blockPos.method_10260() + 0.5 + face.method_10165() * 0.5
+        );
+        return new class_3965(hit, face, blockPos, false);
+    }
+
+    private class_2338 safeKeyShieldPos(class_2338 anchorPos) {
+        class_243 playerPos = this.mc.field_1724.method_73189();
+        class_243 anchorCenter = anchorPos.method_46558();
+        class_243 midpoint = playerPos.method_1019(anchorCenter).method_1021(0.5);
+        return new class_2338(
+                (int) Math.floor(midpoint.field_1352),
+                anchorPos.method_10264(),
+                (int) Math.floor(midpoint.field_1350)
+        );
+    }
+
+    private class_2338 safeKeyAdjacentSolid(class_2338 pos) {
+        class_2350[] dirs = {
+                class_2350.field_11033, class_2350.field_11036,
+                class_2350.field_11043, class_2350.field_11035,
+                class_2350.field_11039, class_2350.field_11034
+        };
+        for (class_2350 dir : dirs) {
+            class_2338 adj = pos.method_10093(dir);
+            if (!this.mc.field_1687.method_8320(adj).method_45474()) return adj;
+        }
+        return null;
+    }
+
+    private int findNonGlowstoneSlot() {
+        for (int i = 0; i < 9; i++) {
+            if (this.mc.field_1724.method_31548().method_5438(i).method_7909() != class_1802.field_8801) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private long getSpeedModeDelay() {
@@ -537,6 +669,14 @@ public class AutoAnchor extends Module {
         this.resetTimer();
         this.glowstoneAttemptStart = 0L;
         this.lastRenderExecTime = 0L;
+    }
+
+    @Environment(EnvType.CLIENT)
+    private static enum SafeKeyState {
+        IDLE,
+        CHARGE,
+        SHIELD,
+        DETONATE;
     }
 
     @Environment(EnvType.CLIENT)
