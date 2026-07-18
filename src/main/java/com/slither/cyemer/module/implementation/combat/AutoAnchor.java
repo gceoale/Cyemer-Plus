@@ -65,6 +65,8 @@ public class AutoAnchor extends Module {
     // 4 ticks = 200 ms, so 5 cycles/second when the key is held.
     private SafeKeyState safeKeyState = SafeKeyState.IDLE;
     private class_2338 safeKeyAnchorPos = null;
+    private class_2338 safeKeyShieldPos = null;
+    private int safeKeyShieldWaitTicks = 0;
     private class_2338 safeKeyWaitPos = null;
     private int safeKeyWaitTicks = 0;
     private int safeKeyOriginalSlot = -1;
@@ -189,6 +191,9 @@ public class AutoAnchor extends Module {
             case SHIELD:
                 this.safeKeyPlaceShield();
                 break;
+            case VERIFY_SHIELD:
+                this.safeKeyVerifyShield();
+                break;
             case DETONATE:
                 this.safeKeyDetonate();
                 break;
@@ -233,21 +238,14 @@ public class AutoAnchor extends Module {
     }
 
     private void safeKeyPlaceAnchor() {
-        if (!(this.mc.field_1765 instanceof class_3965 blockHit)) {
-            System.out.println("[cyemer/autoanchor] safe key abort: not aiming at a block (crosshair=" + this.mc.field_1765 + ")");
-            return;
-        }
+        if (!(this.mc.field_1765 instanceof class_3965 blockHit)) return;
         class_2338 anchorTarget = blockHit.method_17777().method_10093(blockHit.method_17780());
-        if (!this.mc.field_1687.method_8320(anchorTarget).method_45474()) {
-            System.out.println("[cyemer/autoanchor] safe key abort: target " + anchorTarget + " not replaceable");
-            return;
-        }
+        if (!this.mc.field_1687.method_8320(anchorTarget).method_45474()) return;
         int anchorSlot = this.findItemInHotbar(class_1802.field_23141);
-        if (anchorSlot == -1) {
-            System.out.println("[cyemer/autoanchor] safe key abort: no respawn anchor in hotbar (item id=" + class_1802.field_23141 + ")");
-            return;
-        }
-        System.out.println("[cyemer/autoanchor] safe key placing anchor at " + anchorTarget + " (slot " + anchorSlot + ")");
+        if (anchorSlot == -1) return;
+        // Don't start a cycle if we can't shield afterward - avoids charging an
+        // anchor we'd never be able to safely detonate.
+        if (this.findItemInHotbar(class_1802.field_8801) == -1) return;
 
         if (this.safeKeyOriginalSlot == -1) {
             this.safeKeyOriginalSlot = this.mc.field_1724.method_31548().method_67532();
@@ -276,70 +274,91 @@ public class AutoAnchor extends Module {
 
     private void safeKeyPlaceShield() {
         if (this.safeKeyAnchorPos == null) {
-            this.safeKeyState = SafeKeyState.DETONATE;
+            this.abortSafeKeyCycle();
             return;
         }
         int shieldSlot = this.findItemInHotbar(class_1802.field_8801);
         if (shieldSlot == -1) {
-            this.safeKeyState = SafeKeyState.DETONATE;
+            // Ran out mid-cycle. Sit in SHIELD until the user provides glowstone
+            // or releases the key. We never advance to DETONATE without a shield.
             return;
         }
 
         class_2338 shieldPos = this.pickShieldPos(this.safeKeyAnchorPos);
         if (shieldPos == null) {
-            System.out.println("[cyemer/autoanchor] safe key shield: no valid shield position found around " + this.safeKeyAnchorPos);
-            this.safeKeyState = SafeKeyState.DETONATE;
+            // No placeable spot right now. Stay here and try again next tick -
+            // player movement or block changes might open one up.
             return;
         }
-
         class_2338 placeAgainst = this.safeKeyAdjacentSolid(shieldPos);
-        if (placeAgainst == null) {
-            System.out.println("[cyemer/autoanchor] safe key shield: no adjacent solid to place against " + shieldPos);
-            this.safeKeyState = SafeKeyState.DETONATE;
-            return;
-        }
+        if (placeAgainst == null) return;
         class_2350 face = class_2350.method_10147(
                 shieldPos.method_10263() - placeAgainst.method_10263(),
                 shieldPos.method_10264() - placeAgainst.method_10264(),
                 shieldPos.method_10260() - placeAgainst.method_10260()
         );
-        if (face == null) {
+        if (face == null) return;
+
+        this.mc.field_1724.method_31548().method_61496(shieldSlot);
+        this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808, this.hitAt(placeAgainst, face));
+        this.safeKeyShieldPos = shieldPos;
+        this.safeKeyShieldWaitTicks = 0;
+        this.safeKeyState = SafeKeyState.VERIFY_SHIELD;
+    }
+
+    private void safeKeyVerifyShield() {
+        if (this.safeKeyShieldPos == null || this.safeKeyAnchorPos == null) {
+            this.safeKeyState = SafeKeyState.SHIELD;
+            return;
+        }
+        class_2680 shieldState = this.mc.field_1687.method_8320(this.safeKeyShieldPos);
+        // The shield block is confirmed in the world once the target position is
+        // no longer replaceable (glowstone landed there). Only then do we let
+        // the state machine advance to detonation.
+        if (!shieldState.method_45474()) {
+            this.safeKeyShieldPos = null;
+            this.safeKeyShieldWaitTicks = 0;
             this.safeKeyState = SafeKeyState.DETONATE;
             return;
         }
-        this.mc.field_1724.method_31548().method_61496(shieldSlot);
-        this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808, this.hitAt(placeAgainst, face));
-        this.safeKeyState = SafeKeyState.DETONATE;
+        this.safeKeyShieldWaitTicks++;
+        // If the placement packet was dropped or the spot got blocked by
+        // something else, redo the shield step - pick a fresh position and
+        // resend. Never falls through to detonate without a shield.
+        if (this.safeKeyShieldWaitTicks >= 5) {
+            this.safeKeyShieldPos = null;
+            this.safeKeyShieldWaitTicks = 0;
+            this.safeKeyState = SafeKeyState.SHIELD;
+        }
     }
 
     /**
-     * Try shield positions in priority order:
-     *   1. Block adjacent to anchor on the cardinal side facing the player,
-     *      at anchor's Y (classic "wall between player and anchor").
-     *   2. Same, one block higher (chest level).
-     *   3. Directly above the anchor (blocks vertical blast).
-     * Skip any candidate that isn't replaceable or that intersects the player.
+     * Prioritized shield candidates around a placed anchor. Tries the cardinal
+     * side facing the player first (classic "wall between player and anchor"),
+     * then the block above at head height, then the anchor top, then the other
+     * three cardinal sides so we still find something when the ideal spot is
+     * occupied. Skip anything that isn't replaceable or that intersects the
+     * player.
      */
     private class_2338 pickShieldPos(class_2338 anchorPos) {
         class_243 playerPos = this.mc.field_1724.method_73189();
         double dx = playerPos.field_1352 - (anchorPos.method_10263() + 0.5);
         double dz = playerPos.field_1350 - (anchorPos.method_10260() + 0.5);
-        class_2350 toPlayer;
+        class_2350 primary;
         if (Math.abs(dx) >= Math.abs(dz)) {
-            toPlayer = dx >= 0 ? class_2350.field_11034 : class_2350.field_11039;
+            primary = dx >= 0 ? class_2350.field_11034 : class_2350.field_11039;
         } else {
-            toPlayer = dz >= 0 ? class_2350.field_11035 : class_2350.field_11043;
+            primary = dz >= 0 ? class_2350.field_11035 : class_2350.field_11043;
         }
-
-        class_2338 sidePos = anchorPos.method_10093(toPlayer);
-        class_2338[] candidates = new class_2338[]{
-                sidePos,
-                sidePos.method_10084(),
-                anchorPos.method_10084()
-        };
+        class_2350[] horizontals = { primary, class_2350.field_11034, class_2350.field_11039, class_2350.field_11035, class_2350.field_11043 };
+        java.util.LinkedHashSet<class_2338> candidates = new java.util.LinkedHashSet<>();
+        for (class_2350 dir : horizontals) candidates.add(anchorPos.method_10093(dir));
+        for (class_2350 dir : horizontals) candidates.add(anchorPos.method_10093(dir).method_10084());
+        candidates.add(anchorPos.method_10084());
         for (class_2338 candidate : candidates) {
             if (!this.mc.field_1687.method_8320(candidate).method_45474()) continue;
             if (this.intersectsPlayer(candidate)) continue;
+            if (this.safeKeyAdjacentSolid(candidate) == null) continue;
             return candidate;
         }
         return null;
@@ -375,6 +394,8 @@ public class AutoAnchor extends Module {
         }
         this.safeKeyOriginalSlot = -1;
         this.safeKeyAnchorPos = null;
+        this.safeKeyShieldPos = null;
+        this.safeKeyShieldWaitTicks = 0;
         this.safeKeyWaitPos = null;
         this.safeKeyWaitTicks = 0;
         this.safeKeyState = SafeKeyState.IDLE;
@@ -784,6 +805,7 @@ public class AutoAnchor extends Module {
         IDLE,
         CHARGE,
         SHIELD,
+        VERIFY_SHIELD,
         DETONATE,
         WAIT_DETONATE;
     }
