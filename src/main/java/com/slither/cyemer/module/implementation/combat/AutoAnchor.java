@@ -169,7 +169,13 @@ public class AutoAnchor extends Module {
             this.safeKeyDebugHeldLast = held;
         }
         if (!held) {
-            this.abortSafeKeyCycle();
+            // If we're mid-wait for the previous anchor to detonate, let that
+            // finish instead of trashing the state. Everything else aborts.
+            if (this.safeKeyState == SafeKeyState.WAIT_DETONATE) {
+                this.safeKeyWaitForDetonate();
+            } else {
+                this.abortSafeKeyCycle();
+            }
             return;
         }
 
@@ -193,12 +199,33 @@ public class AutoAnchor extends Module {
     }
 
     private void safeKeyWaitForDetonate() {
-        // Reset once the prior anchor block is gone (either exploded or the
-        // server never confirmed placement). 20-tick / 1 s hard timeout.
         this.safeKeyWaitTicks++;
+
         boolean anchorGone = this.safeKeyWaitPos == null
                 || !this.mc.field_1687.method_8320(this.safeKeyWaitPos).method_27852(class_2246.field_23152);
-        if (anchorGone || this.safeKeyWaitTicks >= 20) {
+        if (anchorGone) {
+            this.safeKeyWaitPos = null;
+            this.safeKeyWaitTicks = 0;
+            this.safeKeyState = SafeKeyState.IDLE;
+            return;
+        }
+
+        // Server may have dropped the detonate packet - re-send it every 10
+        // ticks so we don't sit forever waiting for a lost packet.
+        if (this.safeKeyWaitTicks % 10 == 0 && this.mc.field_1761 != null && this.mc.field_1724 != null) {
+            int restoreSlot = this.safeKeyOriginalSlot != -1
+                    ? this.safeKeyOriginalSlot
+                    : this.findNonGlowstoneSlot();
+            if (restoreSlot != -1) {
+                this.mc.field_1724.method_31548().method_61496(restoreSlot);
+            }
+            this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808,
+                    this.hitAt(this.safeKeyWaitPos, class_2350.field_11036));
+        }
+
+        // Hard give-up after 60 ticks / 3 s so we don't wedge forever if the
+        // anchor is really stuck (world edge / plot boundary / etc).
+        if (this.safeKeyWaitTicks >= 60) {
             this.safeKeyWaitPos = null;
             this.safeKeyWaitTicks = 0;
             this.safeKeyState = SafeKeyState.IDLE;
