@@ -60,17 +60,14 @@ public class AutoAnchor extends Module {
     private final Set<class_2338> placedAnchors = new HashSet<>();
     private class_2680 cachedAnchorState = null;
 
-    // World-state-aware safe key loop. Each tick decides the next action
-    // by inspecting the actual world at the target position. Self-corrects
-    // when a step fails - we retry until the world reflects the expected
-    // state, then move to the next step.
+    // Independent packet-based state machine driven by the safe key. One
+    // action per tick -> a full place/charge/shield/detonate cycle takes
+    // 4 ticks = 200 ms, so 5 cycles/second when the key is held.
+    private SafeKeyState safeKeyState = SafeKeyState.IDLE;
+    private class_2338 safeKeyAnchorPos = null;
+    private class_2338 safeKeyWaitPos = null;
+    private int safeKeyWaitTicks = 0;
     private int safeKeyOriginalSlot = -1;
-    private class_2338 safeKeyTargetAnchor = null;
-    private class_2338 safeKeyTargetShield = null;
-    private class_3965 safeKeyPlacementHit = null;
-    private int safeKeyStuckTicks = 0;
-    private static final int SAFE_KEY_STUCK_LIMIT = 40;
-    private static final double SAFE_KEY_REACH_SQ = 36.0;
 
     public AutoAnchor() {
         super("AutoAnchor", "Fills and explodes anchors with randomized patterns.", Category.COMBAT);
@@ -146,13 +143,18 @@ public class AutoAnchor extends Module {
         }
     }
 
+    private boolean safeKeyDebugHeldLast = false;
+
     private void handleSafeAnchorKey() {
         int keyCode = this.safeAnchorKey.getKeyCode();
-        if (keyCode == -1 || this.mc.field_1761 == null || this.mc.field_1724 == null) {
+        if (keyCode == -1) {
             this.abortSafeKeyCycle();
             return;
         }
-
+        if (this.mc.field_1761 == null) {
+            this.abortSafeKeyCycle();
+            return;
+        }
         boolean held;
         if (keyCode < 0) {
             int button = keyCode + 100;
@@ -161,164 +163,162 @@ public class AutoAnchor extends Module {
         } else {
             held = class_3675.method_15987(class_310.method_1551().method_22683(), keyCode);
         }
-
+        if (held != this.safeKeyDebugHeldLast) {
+            System.out.println("[cyemer/autoanchor] safe key " + (held ? "PRESSED" : "released")
+                    + " code=" + keyCode + " state=" + this.safeKeyState);
+            this.safeKeyDebugHeldLast = held;
+        }
         if (!held) {
-            this.abortSafeKeyCycle();
+            // If we're mid-wait for the previous anchor to detonate, let that
+            // finish instead of trashing the state. Everything else aborts.
+            if (this.safeKeyState == SafeKeyState.WAIT_DETONATE) {
+                this.safeKeyWaitForDetonate();
+            } else {
+                this.abortSafeKeyCycle();
+            }
             return;
         }
 
-        // Acquire (or invalidate + re-acquire) the anchor target based on the
-        // player's crosshair. Once we have one, we STAY on that target through
-        // charge, shield, and detonate - so a slight crosshair drift doesn't
-        // move us onto a different block mid-cycle.
-        if (this.safeKeyTargetAnchor != null && this.playerOutOfReach(this.safeKeyTargetAnchor)) {
-            this.safeKeyTargetAnchor = null;
-            this.safeKeyTargetShield = null;
-            this.safeKeyPlacementHit = null;
+        switch (this.safeKeyState) {
+            case IDLE:
+                this.safeKeyPlaceAnchor();
+                break;
+            case CHARGE:
+                this.safeKeyChargeAnchor();
+                break;
+            case SHIELD:
+                this.safeKeyPlaceShield();
+                break;
+            case DETONATE:
+                this.safeKeyDetonate();
+                break;
+            case WAIT_DETONATE:
+                this.safeKeyWaitForDetonate();
+                break;
         }
-        if (this.safeKeyTargetAnchor == null) {
-            if (!(this.mc.field_1765 instanceof class_3965 blockHit)) return;
-            class_2338 candidate = blockHit.method_17777().method_10093(blockHit.method_17780());
-            if (this.playerOutOfReach(candidate)) return;
-            this.safeKeyTargetAnchor = candidate;
-            this.safeKeyTargetShield = this.pickShieldPos(candidate);
-            this.safeKeyPlacementHit = blockHit;
-            this.safeKeyStuckTicks = 0;
+    }
+
+    private void safeKeyWaitForDetonate() {
+        this.safeKeyWaitTicks++;
+
+        boolean anchorGone = this.safeKeyWaitPos == null
+                || !this.mc.field_1687.method_8320(this.safeKeyWaitPos).method_27852(class_2246.field_23152);
+        if (anchorGone) {
+            this.safeKeyWaitPos = null;
+            this.safeKeyWaitTicks = 0;
+            this.safeKeyState = SafeKeyState.IDLE;
+            return;
         }
+
+        // Server may have dropped the detonate packet - re-send it every 10
+        // ticks so we don't sit forever waiting for a lost packet.
+        if (this.safeKeyWaitTicks % 10 == 0 && this.mc.field_1761 != null && this.mc.field_1724 != null) {
+            int restoreSlot = this.safeKeyOriginalSlot != -1
+                    ? this.safeKeyOriginalSlot
+                    : this.findNonGlowstoneSlot();
+            if (restoreSlot != -1) {
+                this.mc.field_1724.method_31548().method_61496(restoreSlot);
+            }
+            this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808,
+                    this.hitAt(this.safeKeyWaitPos, class_2350.field_11036));
+        }
+
+        // Hard give-up after 60 ticks / 3 s so we don't wedge forever if the
+        // anchor is really stuck (world edge / plot boundary / etc).
+        if (this.safeKeyWaitTicks >= 60) {
+            this.safeKeyWaitPos = null;
+            this.safeKeyWaitTicks = 0;
+            this.safeKeyState = SafeKeyState.IDLE;
+        }
+    }
+
+    private void safeKeyPlaceAnchor() {
+        if (!(this.mc.field_1765 instanceof class_3965 blockHit)) {
+            System.out.println("[cyemer/autoanchor] safe key abort: not aiming at a block (crosshair=" + this.mc.field_1765 + ")");
+            return;
+        }
+        class_2338 anchorTarget = blockHit.method_17777().method_10093(blockHit.method_17780());
+        if (!this.mc.field_1687.method_8320(anchorTarget).method_45474()) {
+            System.out.println("[cyemer/autoanchor] safe key abort: target " + anchorTarget + " not replaceable");
+            return;
+        }
+        int anchorSlot = this.findItemInHotbar(class_1802.field_23141);
+        if (anchorSlot == -1) {
+            System.out.println("[cyemer/autoanchor] safe key abort: no respawn anchor in hotbar (item id=" + class_1802.field_23141 + ")");
+            return;
+        }
+        System.out.println("[cyemer/autoanchor] safe key placing anchor at " + anchorTarget + " (slot " + anchorSlot + ")");
+
         if (this.safeKeyOriginalSlot == -1) {
             this.safeKeyOriginalSlot = this.mc.field_1724.method_31548().method_67532();
         }
-
-        // Decide the next action from what's actually in the world at the
-        // target - so a dropped packet, a lag spike, or a rejected placement
-        // all just cause us to retry the same step next tick.
-        class_2680 anchorState = this.mc.field_1687.method_8320(this.safeKeyTargetAnchor);
-        boolean anchorPresent = anchorState.method_27852(class_2246.field_23152);
-
-        if (!anchorPresent) {
-            if (!anchorState.method_45474()) {
-                // Position is blocked by something that isn't the anchor and isn't
-                // replaceable - re-acquire from crosshair next tick.
-                this.resetSafeKeyTargets();
-                return;
-            }
-            this.safeKeyDoPlace();
-            this.safeKeyBumpStuck();
-            return;
-        }
-
-        int charges = (Integer) anchorState.method_11654(class_4969.field_23153);
-        if (charges < 1) {
-            this.safeKeyDoCharge();
-            this.safeKeyBumpStuck();
-            return;
-        }
-
-        // Anchor is placed and charged - try to get a shield block in.
-        if (this.safeKeyTargetShield != null) {
-            class_2680 shieldState = this.mc.field_1687.method_8320(this.safeKeyTargetShield);
-            if (shieldState.method_45474() && !this.intersectsPlayer(this.safeKeyTargetShield)) {
-                if (this.safeKeyDoShield()) {
-                    this.safeKeyBumpStuck();
-                    return;
-                }
-                // No valid placement geometry - skip the shield this cycle.
-                this.safeKeyTargetShield = null;
-            }
-        }
-
-        // Everything's staged - fire the detonate. We KEEP the target set so
-        // if the packet gets dropped the next tick sees the anchor still
-        // there and retries the detonate step. Target clears itself when the
-        // anchor block actually vanishes.
-        this.safeKeyDoDetonate();
-        this.safeKeyStuckTicks = 0;
-    }
-
-    private void safeKeyDoPlace() {
-        int anchorSlot = this.findItemInHotbar(class_1802.field_23141);
-        if (anchorSlot == -1) return;
-        class_3965 hit = this.safeKeyPlacementHit;
-        if (hit == null) {
-            class_2338 against = this.safeKeyAdjacentSolid(this.safeKeyTargetAnchor);
-            if (against == null) return;
-            class_2350 face = class_2350.method_10147(
-                    this.safeKeyTargetAnchor.method_10263() - against.method_10263(),
-                    this.safeKeyTargetAnchor.method_10264() - against.method_10264(),
-                    this.safeKeyTargetAnchor.method_10260() - against.method_10260()
-            );
-            if (face == null) return;
-            hit = this.hitAt(against, face);
-        }
         this.mc.field_1724.method_31548().method_61496(anchorSlot);
-        this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808, hit);
+        this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808, blockHit);
+        this.safeKeyAnchorPos = anchorTarget;
+        this.safeKeyState = SafeKeyState.CHARGE;
     }
 
-    private void safeKeyDoCharge() {
+    private void safeKeyChargeAnchor() {
+        if (this.safeKeyAnchorPos == null) {
+            this.safeKeyState = SafeKeyState.IDLE;
+            return;
+        }
         int glowSlot = this.findItemInHotbar(class_1802.field_8801);
-        if (glowSlot == -1) return;
+        if (glowSlot == -1) {
+            this.safeKeyState = SafeKeyState.SHIELD;
+            return;
+        }
         this.mc.field_1724.method_31548().method_61496(glowSlot);
         this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808,
-                this.hitAt(this.safeKeyTargetAnchor, class_2350.field_11036));
+                this.hitAt(this.safeKeyAnchorPos, class_2350.field_11036));
+        this.safeKeyState = SafeKeyState.SHIELD;
     }
 
-    private boolean safeKeyDoShield() {
-        int glowSlot = this.findItemInHotbar(class_1802.field_8801);
-        if (glowSlot == -1) return false;
-        class_2338 against = this.safeKeyAdjacentSolid(this.safeKeyTargetShield);
-        if (against == null) return false;
+    private void safeKeyPlaceShield() {
+        if (this.safeKeyAnchorPos == null) {
+            this.safeKeyState = SafeKeyState.DETONATE;
+            return;
+        }
+        int shieldSlot = this.findItemInHotbar(class_1802.field_8801);
+        if (shieldSlot == -1) {
+            this.safeKeyState = SafeKeyState.DETONATE;
+            return;
+        }
+
+        class_2338 shieldPos = this.pickShieldPos(this.safeKeyAnchorPos);
+        if (shieldPos == null) {
+            System.out.println("[cyemer/autoanchor] safe key shield: no valid shield position found around " + this.safeKeyAnchorPos);
+            this.safeKeyState = SafeKeyState.DETONATE;
+            return;
+        }
+
+        class_2338 placeAgainst = this.safeKeyAdjacentSolid(shieldPos);
+        if (placeAgainst == null) {
+            System.out.println("[cyemer/autoanchor] safe key shield: no adjacent solid to place against " + shieldPos);
+            this.safeKeyState = SafeKeyState.DETONATE;
+            return;
+        }
         class_2350 face = class_2350.method_10147(
-                this.safeKeyTargetShield.method_10263() - against.method_10263(),
-                this.safeKeyTargetShield.method_10264() - against.method_10264(),
-                this.safeKeyTargetShield.method_10260() - against.method_10260()
+                shieldPos.method_10263() - placeAgainst.method_10263(),
+                shieldPos.method_10264() - placeAgainst.method_10264(),
+                shieldPos.method_10260() - placeAgainst.method_10260()
         );
-        if (face == null) return false;
-        this.mc.field_1724.method_31548().method_61496(glowSlot);
-        this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808, this.hitAt(against, face));
-        return true;
-    }
-
-    private void safeKeyDoDetonate() {
-        int restoreSlot = this.safeKeyOriginalSlot != -1
-                ? this.safeKeyOriginalSlot
-                : this.findNonGlowstoneSlot();
-        if (restoreSlot != -1) {
-            this.mc.field_1724.method_31548().method_61496(restoreSlot);
+        if (face == null) {
+            this.safeKeyState = SafeKeyState.DETONATE;
+            return;
         }
-        this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808,
-                this.hitAt(this.safeKeyTargetAnchor, class_2350.field_11036));
-    }
-
-    private void safeKeyBumpStuck() {
-        this.safeKeyStuckTicks++;
-        if (this.safeKeyStuckTicks >= SAFE_KEY_STUCK_LIMIT) {
-            // Progress stalled - most likely a server rejection loop or a
-            // moved / broken target. Reset and re-acquire from crosshair.
-            this.resetSafeKeyTargets();
-        }
-    }
-
-    private void resetSafeKeyTargets() {
-        this.safeKeyTargetAnchor = null;
-        this.safeKeyTargetShield = null;
-        this.safeKeyPlacementHit = null;
-        this.safeKeyStuckTicks = 0;
-    }
-
-    private boolean playerOutOfReach(class_2338 pos) {
-        double d = this.mc.field_1724.method_5649(
-                pos.method_10263() + 0.5,
-                pos.method_10264() + 0.5,
-                pos.method_10260() + 0.5);
-        return d > SAFE_KEY_REACH_SQ;
+        this.mc.field_1724.method_31548().method_61496(shieldSlot);
+        this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808, this.hitAt(placeAgainst, face));
+        this.safeKeyState = SafeKeyState.DETONATE;
     }
 
     /**
-     * Priority list of shield positions around a placed anchor:
-     *   1. Cardinal side facing the player, at anchor's Y - classic wall.
-     *   2. Same side, one block up - chest level.
-     *   3. Directly above the anchor - vertical blast absorber.
-     * First one that's replaceable and doesn't intersect the player wins.
+     * Try shield positions in priority order:
+     *   1. Block adjacent to anchor on the cardinal side facing the player,
+     *      at anchor's Y (classic "wall between player and anchor").
+     *   2. Same, one block higher (chest level).
+     *   3. Directly above the anchor (blocks vertical blast).
+     * Skip any candidate that isn't replaceable or that intersects the player.
      */
     private class_2338 pickShieldPos(class_2338 anchorPos) {
         class_243 playerPos = this.mc.field_1724.method_73189();
@@ -346,15 +346,38 @@ public class AutoAnchor extends Module {
     }
 
     private boolean intersectsPlayer(class_2338 pos) {
-        return this.mc.field_1724.method_5829().method_994(new net.minecraft.class_238(pos));
+        return this.mc.field_1724.method_5829().method_994(
+                new net.minecraft.class_238(pos));
+    }
+
+    private void safeKeyDetonate() {
+        if (this.safeKeyAnchorPos == null) {
+            this.safeKeyState = SafeKeyState.IDLE;
+            return;
+        }
+        // Switch to something non-glowstone so the interact detonates instead of charging.
+        int restoreSlot = this.safeKeyOriginalSlot != -1 ? this.safeKeyOriginalSlot : this.findNonGlowstoneSlot();
+        if (restoreSlot != -1) {
+            this.mc.field_1724.method_31548().method_61496(restoreSlot);
+        }
+        this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808,
+                this.hitAt(this.safeKeyAnchorPos, class_2350.field_11036));
+        this.safeKeyWaitPos = this.safeKeyAnchorPos;
+        this.safeKeyWaitTicks = 0;
+        this.safeKeyAnchorPos = null;
+        this.safeKeyState = SafeKeyState.WAIT_DETONATE;
     }
 
     private void abortSafeKeyCycle() {
+        if (this.safeKeyState == SafeKeyState.IDLE && this.safeKeyOriginalSlot == -1) return;
         if (this.safeKeyOriginalSlot != -1 && this.mc.field_1724 != null) {
             this.mc.field_1724.method_31548().method_61496(this.safeKeyOriginalSlot);
         }
         this.safeKeyOriginalSlot = -1;
-        this.resetSafeKeyTargets();
+        this.safeKeyAnchorPos = null;
+        this.safeKeyWaitPos = null;
+        this.safeKeyWaitTicks = 0;
+        this.safeKeyState = SafeKeyState.IDLE;
     }
 
     private class_3965 hitAt(class_2338 blockPos, class_2350 face) {
@@ -754,6 +777,15 @@ public class AutoAnchor extends Module {
         this.resetTimer();
         this.glowstoneAttemptStart = 0L;
         this.lastRenderExecTime = 0L;
+    }
+
+    @Environment(EnvType.CLIENT)
+    private static enum SafeKeyState {
+        IDLE,
+        CHARGE,
+        SHIELD,
+        DETONATE,
+        WAIT_DETONATE;
     }
 
     @Environment(EnvType.CLIENT)
