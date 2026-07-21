@@ -251,12 +251,20 @@ public class AutoShieldBreak extends Module {
     }
 
     private void startDrain(class_1657 target, boolean stunFired) {
-        if (target == null || this.mc.field_1724 == null || this.mc.field_1687 == null) return;
-        // Predict where the enemy will be at the peak of their knockback.
-        // If they aren't moving up (no stun), cobweb goes at their current feet.
+        if (target == null || this.mc.field_1724 == null || this.mc.field_1687 == null) {
+            System.out.println("[cyemer/drain] startDrain skipped: no target or no world");
+            return;
+        }
         class_2338 cobwebPos = this.predictCobwebPos(target, stunFired);
+        System.out.println("[cyemer/drain] startDrain stun=" + stunFired
+                + " target=" + target.method_5477().getString()
+                + " vel=" + target.method_18798()
+                + " cobwebPos=" + cobwebPos);
         if (cobwebPos == null) return;
-        if (!this.mc.field_1687.method_8320(cobwebPos).method_45474()) return;
+        if (!this.mc.field_1687.method_8320(cobwebPos).method_45474()) {
+            System.out.println("[cyemer/drain] cobweb pos not replaceable: state=" + this.mc.field_1687.method_8320(cobwebPos));
+            return;
+        }
 
         this.drainTargetId = target.method_5667();
         this.drainCobwebPos = cobwebPos;
@@ -264,6 +272,7 @@ public class AutoShieldBreak extends Module {
         this.drainSavedSlot = ((PlayerInventoryAccessor) this.mc.field_1724.method_31548()).getSelectedSlot();
         this.drainState = DrainState.PLACE_COBWEB;
         this.drainWaitTicks = 0;
+        System.out.println("[cyemer/drain] state=PLACE_COBWEB savedSlot=" + this.drainSavedSlot);
     }
 
     private class_2338 predictCobwebPos(class_1657 target, boolean stunFired) {
@@ -348,16 +357,32 @@ public class AutoShieldBreak extends Module {
 
     private void drainPlaceCobweb() {
         int cobwebSlot = this.findItemInHotbar(class_1802.field_8786);
-        if (cobwebSlot == -1) { this.resetDrain(); return; }
-        if (!this.placeBlockAt(this.drainCobwebPos, cobwebSlot)) return;
+        if (cobwebSlot == -1) {
+            System.out.println("[cyemer/drain] PLACE_COBWEB abort: no cobweb in hotbar");
+            this.resetDrain();
+            return;
+        }
+        if (!this.placeBlockAt(this.drainCobwebPos, cobwebSlot)) {
+            System.out.println("[cyemer/drain] PLACE_COBWEB failed to send packet at " + this.drainCobwebPos + " (no adjacent solid?)");
+            return;
+        }
+        System.out.println("[cyemer/drain] cobweb placed at " + this.drainCobwebPos);
         this.drainState = DrainState.PLACE_LAVA_ON_COBWEB;
     }
 
     private void drainPlaceLavaOnCobweb() {
         int lavaSlot = this.findItemInHotbar(class_1802.field_8187);
-        if (lavaSlot == -1) { this.resetDrain(); return; }
+        if (lavaSlot == -1) {
+            System.out.println("[cyemer/drain] PLACE_LAVA abort: no lava bucket in hotbar");
+            this.resetDrain();
+            return;
+        }
         class_2338 lavaAt = this.drainCobwebPos.method_10084();
-        if (!this.placeLiquidAt(lavaAt, lavaSlot)) return;
+        if (!this.placeLiquidAt(lavaAt, lavaSlot)) {
+            System.out.println("[cyemer/drain] PLACE_LAVA failed at " + lavaAt);
+            return;
+        }
+        System.out.println("[cyemer/drain] lava on cobweb at " + lavaAt);
         this.drainLavaPos = lavaAt;
         this.drainState = DrainState.WAIT_LAVA;
         this.drainWaitTicks = 0;
