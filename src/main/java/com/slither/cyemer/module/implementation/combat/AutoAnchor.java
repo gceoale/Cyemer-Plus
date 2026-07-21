@@ -143,8 +143,6 @@ public class AutoAnchor extends Module {
         }
     }
 
-    private boolean safeKeyDebugHeldLast = false;
-
     private void handleSafeAnchorKey() {
         int keyCode = this.safeAnchorKey.getKeyCode();
         if (keyCode == -1) {
@@ -162,11 +160,6 @@ public class AutoAnchor extends Module {
                     class_310.method_1551().method_22683().method_4490(), button) == 1;
         } else {
             held = class_3675.method_15987(class_310.method_1551().method_22683(), keyCode);
-        }
-        if (held != this.safeKeyDebugHeldLast) {
-            System.out.println("[cyemer/autoanchor] safe key " + (held ? "PRESSED" : "released")
-                    + " code=" + keyCode + " state=" + this.safeKeyState);
-            this.safeKeyDebugHeldLast = held;
         }
         if (!held) {
             // If we're mid-wait for the previous anchor to detonate, let that
@@ -233,21 +226,11 @@ public class AutoAnchor extends Module {
     }
 
     private void safeKeyPlaceAnchor() {
-        if (!(this.mc.field_1765 instanceof class_3965 blockHit)) {
-            System.out.println("[cyemer/autoanchor] safe key abort: not aiming at a block (crosshair=" + this.mc.field_1765 + ")");
-            return;
-        }
+        if (!(this.mc.field_1765 instanceof class_3965 blockHit)) return;
         class_2338 anchorTarget = blockHit.method_17777().method_10093(blockHit.method_17780());
-        if (!this.mc.field_1687.method_8320(anchorTarget).method_45474()) {
-            System.out.println("[cyemer/autoanchor] safe key abort: target " + anchorTarget + " not replaceable");
-            return;
-        }
+        if (!this.mc.field_1687.method_8320(anchorTarget).method_45474()) return;
         int anchorSlot = this.findItemInHotbar(class_1802.field_23141);
-        if (anchorSlot == -1) {
-            System.out.println("[cyemer/autoanchor] safe key abort: no respawn anchor in hotbar (item id=" + class_1802.field_23141 + ")");
-            return;
-        }
-        System.out.println("[cyemer/autoanchor] safe key placing anchor at " + anchorTarget + " (slot " + anchorSlot + ")");
+        if (anchorSlot == -1) return;
 
         if (this.safeKeyOriginalSlot == -1) {
             this.safeKeyOriginalSlot = this.mc.field_1724.method_31548().method_67532();
@@ -287,14 +270,12 @@ public class AutoAnchor extends Module {
 
         class_2338 shieldPos = this.pickShieldPos(this.safeKeyAnchorPos);
         if (shieldPos == null) {
-            System.out.println("[cyemer/autoanchor] safe key shield: no valid shield position found around " + this.safeKeyAnchorPos);
             this.safeKeyState = SafeKeyState.DETONATE;
             return;
         }
 
         class_2338 placeAgainst = this.safeKeyAdjacentSolid(shieldPos);
         if (placeAgainst == null) {
-            System.out.println("[cyemer/autoanchor] safe key shield: no adjacent solid to place against " + shieldPos);
             this.safeKeyState = SafeKeyState.DETONATE;
             return;
         }

@@ -57,7 +57,6 @@ public final class OverlayWindow {
         }
 
         if (this.handle == 0L) {
-            System.err.println("[cyemer/streamproof] glfwCreateWindow returned NULL");
             GLFW.glfwMakeContextCurrent(previousContext);
             return false;
         }

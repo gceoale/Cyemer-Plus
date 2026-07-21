@@ -127,7 +127,6 @@ public final class StreamProofPresenter {
                     "cyemer_streamproof_backup", usage, template.getFormat(), w, h, 1, 1);
             backupView = RenderSystem.getDevice().createTextureView(backupTexture);
         } catch (Throwable t) {
-            System.err.println("[cyemer/streamproof] createTexture failed: " + t);
             backupTexture = null;
             backupView = null;
         }
