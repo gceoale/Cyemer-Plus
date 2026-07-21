@@ -268,11 +268,27 @@ public class AutoShieldBreak extends Module {
     }
 
     private class_2338 predictCobwebPos(class_1657 target, boolean stunFired) {
-        // The old peak-prediction placed cobweb in mid-air with no adjacent
-        // solid to click against, so placement always failed. Cobwebs work
-        // fine at the target's feet - they stand in / land in them either
-        // way, and there's always a floor block below to place against.
-        return target.method_24515();
+        // Post-shield-break the target is often already airborne (upward
+        // knockback velocity), so their block position has no adjacent solid
+        // to click against. Walk downward from their feet block until we hit
+        // the first solid - cobweb goes ONE ABOVE that solid, guaranteed to
+        // have a placement face (the solid below). Where they land after the
+        // knockback arc.
+        class_2338 feet = target.method_24515();
+        for (int drop = 0; drop < 24; drop++) {
+            class_2338 candidate = feet.method_10087(drop);         // .down(drop)
+            class_2338 below = candidate.method_10074();            // .down()
+            boolean candidateReplaceable = this.mc.field_1687.method_8320(candidate).method_45474();
+            boolean belowSolid = !this.mc.field_1687.method_8320(below).method_45474();
+            if (candidateReplaceable && belowSolid) {
+                // Reach guard - if the landing spot is way below us, skip
+                // (packet would be rejected server-side anyway).
+                double dist = candidate.method_10262(this.mc.field_1724.method_24515());
+                if (dist > 36.0) return null;
+                return candidate;
+            }
+        }
+        return null;
     }
 
     private void tickDrain() {
