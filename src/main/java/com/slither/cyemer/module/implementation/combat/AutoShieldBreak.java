@@ -77,8 +77,10 @@ public class AutoShieldBreak extends Module {
     private class_2338 drainWaterPos = null;     // enemy-placed water location
     private int drainWaitTicks = 0;
     private int drainSavedSlot = -1;
+    private int drainFailCount = 0;              // consecutive placement failures
     private long drainStartedAt = 0L;
     private static final int DRAIN_LAVA_WAIT_TICKS = 5;
+    private static final int DRAIN_MAX_FAILS = 15;
     private static final long DRAIN_WATCH_TIMEOUT_MS = 6000L;
 
     public AutoShieldBreak() {
@@ -251,20 +253,10 @@ public class AutoShieldBreak extends Module {
     }
 
     private void startDrain(class_1657 target, boolean stunFired) {
-        if (target == null || this.mc.field_1724 == null || this.mc.field_1687 == null) {
-            System.out.println("[cyemer/drain] startDrain skipped: no target or no world");
-            return;
-        }
+        if (target == null || this.mc.field_1724 == null || this.mc.field_1687 == null) return;
         class_2338 cobwebPos = this.predictCobwebPos(target, stunFired);
-        System.out.println("[cyemer/drain] startDrain stun=" + stunFired
-                + " target=" + target.method_5477().getString()
-                + " vel=" + target.method_18798()
-                + " cobwebPos=" + cobwebPos);
         if (cobwebPos == null) return;
-        if (!this.mc.field_1687.method_8320(cobwebPos).method_45474()) {
-            System.out.println("[cyemer/drain] cobweb pos not replaceable: state=" + this.mc.field_1687.method_8320(cobwebPos));
-            return;
-        }
+        if (!this.mc.field_1687.method_8320(cobwebPos).method_45474()) return;
 
         this.drainTargetId = target.method_5667();
         this.drainCobwebPos = cobwebPos;
@@ -272,32 +264,15 @@ public class AutoShieldBreak extends Module {
         this.drainSavedSlot = ((PlayerInventoryAccessor) this.mc.field_1724.method_31548()).getSelectedSlot();
         this.drainState = DrainState.PLACE_COBWEB;
         this.drainWaitTicks = 0;
-        System.out.println("[cyemer/drain] state=PLACE_COBWEB savedSlot=" + this.drainSavedSlot);
+        this.drainFailCount = 0;
     }
 
     private class_2338 predictCobwebPos(class_1657 target, boolean stunFired) {
-        class_243 vel = target.method_18798();
-        class_243 pos = target.method_73189();
-        double x = pos.field_1352, y = pos.field_1351, z = pos.field_1350;
-        double vx = vel.field_1352, vy = vel.field_1351, vz = vel.field_1350;
-
-        // Not stunned (or falling): just cobweb their feet.
-        if (!stunFired || vy <= 0.05) {
-            return new class_2338((int) Math.floor(x), (int) Math.floor(y), (int) Math.floor(z));
-        }
-
-        // Simulate forward: peak is where vy crosses zero. MC physics:
-        // pos += vel; vel.y -= 0.08; vel *= (0.98, 0.98, 0.98) in air.
-        for (int i = 0; i < 40 && vy > 0; i++) {
-            x += vx;
-            y += vy;
-            z += vz;
-            vy -= 0.08;
-            vy *= 0.98;
-            vx *= 0.91;
-            vz *= 0.91;
-        }
-        return new class_2338((int) Math.floor(x), (int) Math.floor(y), (int) Math.floor(z));
+        // The old peak-prediction placed cobweb in mid-air with no adjacent
+        // solid to click against, so placement always failed. Cobwebs work
+        // fine at the target's feet - they stand in / land in them either
+        // way, and there's always a floor block below to place against.
+        return target.method_24515();
     }
 
     private void tickDrain() {
@@ -357,32 +332,26 @@ public class AutoShieldBreak extends Module {
 
     private void drainPlaceCobweb() {
         int cobwebSlot = this.findItemInHotbar(class_1802.field_8786);
-        if (cobwebSlot == -1) {
-            System.out.println("[cyemer/drain] PLACE_COBWEB abort: no cobweb in hotbar");
-            this.resetDrain();
-            return;
-        }
+        if (cobwebSlot == -1) { this.resetDrain(); return; }
         if (!this.placeBlockAt(this.drainCobwebPos, cobwebSlot)) {
-            System.out.println("[cyemer/drain] PLACE_COBWEB failed to send packet at " + this.drainCobwebPos + " (no adjacent solid?)");
+            this.drainFailCount++;
+            if (this.drainFailCount >= DRAIN_MAX_FAILS) this.resetDrain();
             return;
         }
-        System.out.println("[cyemer/drain] cobweb placed at " + this.drainCobwebPos);
+        this.drainFailCount = 0;
         this.drainState = DrainState.PLACE_LAVA_ON_COBWEB;
     }
 
     private void drainPlaceLavaOnCobweb() {
         int lavaSlot = this.findItemInHotbar(class_1802.field_8187);
-        if (lavaSlot == -1) {
-            System.out.println("[cyemer/drain] PLACE_LAVA abort: no lava bucket in hotbar");
-            this.resetDrain();
-            return;
-        }
+        if (lavaSlot == -1) { this.resetDrain(); return; }
         class_2338 lavaAt = this.drainCobwebPos.method_10084();
         if (!this.placeLiquidAt(lavaAt, lavaSlot)) {
-            System.out.println("[cyemer/drain] PLACE_LAVA failed at " + lavaAt);
+            this.drainFailCount++;
+            if (this.drainFailCount >= DRAIN_MAX_FAILS) this.resetDrain();
             return;
         }
-        System.out.println("[cyemer/drain] lava on cobweb at " + lavaAt);
+        this.drainFailCount = 0;
         this.drainLavaPos = lavaAt;
         this.drainState = DrainState.WAIT_LAVA;
         this.drainWaitTicks = 0;
@@ -573,6 +542,7 @@ public class AutoShieldBreak extends Module {
         this.drainAwayLavaPos = null;
         this.drainWaterPos = null;
         this.drainWaitTicks = 0;
+        this.drainFailCount = 0;
     }
 
     private boolean isLookingAtHitbox(class_1657 target) {
