@@ -68,6 +68,13 @@ public class AutoAnchor extends Module {
     private class_2338 safeKeyWaitPos = null;
     private int safeKeyWaitTicks = 0;
     private int safeKeyOriginalSlot = -1;
+    // Cycle-tick counter: 0 = frame we placed the anchor, then each state's
+    // action fires at a scheduled tick so the whole cycle spans ~10 ticks
+    // (500 ms) regardless of how fast the state machine would otherwise churn.
+    private int safeKeyCycleTick = 0;
+    private static final int SAFE_KEY_CHARGE_TICK = 3;
+    private static final int SAFE_KEY_SHIELD_TICK = 6;
+    private static final int SAFE_KEY_DETONATE_TICK = 9;
 
     public AutoAnchor() {
         super("AutoAnchor", "Fills and explodes anchors with randomized patterns.", Category.COMBAT);
@@ -179,18 +186,28 @@ public class AutoAnchor extends Module {
             return;
         }
 
+        if (this.safeKeyState != SafeKeyState.IDLE && this.safeKeyState != SafeKeyState.WAIT_DETONATE) {
+            this.safeKeyCycleTick++;
+        }
+
         switch (this.safeKeyState) {
             case IDLE:
                 this.safeKeyPlaceAnchor();
                 break;
             case CHARGE:
-                this.safeKeyChargeAnchor();
+                if (this.safeKeyCycleTick >= SAFE_KEY_CHARGE_TICK) {
+                    this.safeKeyChargeAnchor();
+                }
                 break;
             case SHIELD:
-                this.safeKeyPlaceShield();
+                if (this.safeKeyCycleTick >= SAFE_KEY_SHIELD_TICK) {
+                    this.safeKeyPlaceShield();
+                }
                 break;
             case DETONATE:
-                this.safeKeyDetonate();
+                if (this.safeKeyCycleTick >= SAFE_KEY_DETONATE_TICK) {
+                    this.safeKeyDetonate();
+                }
                 break;
             case WAIT_DETONATE:
                 this.safeKeyWaitForDetonate();
@@ -256,6 +273,7 @@ public class AutoAnchor extends Module {
         this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808, blockHit);
         this.safeKeyAnchorPos = anchorTarget;
         this.safeKeyState = SafeKeyState.CHARGE;
+        this.safeKeyCycleTick = 0;
     }
 
     private void safeKeyChargeAnchor() {
@@ -377,6 +395,7 @@ public class AutoAnchor extends Module {
         this.safeKeyAnchorPos = null;
         this.safeKeyWaitPos = null;
         this.safeKeyWaitTicks = 0;
+        this.safeKeyCycleTick = 0;
         this.safeKeyState = SafeKeyState.IDLE;
     }
 
