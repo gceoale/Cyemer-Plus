@@ -68,13 +68,6 @@ public class AutoAnchor extends Module {
     private class_2338 safeKeyWaitPos = null;
     private int safeKeyWaitTicks = 0;
     private int safeKeyOriginalSlot = -1;
-    // Cycle-tick counter: 0 = frame we placed the anchor, then each state's
-    // action fires at a scheduled tick so the whole cycle spans ~10 ticks
-    // (500 ms) regardless of how fast the state machine would otherwise churn.
-    private int safeKeyCycleTick = 0;
-    private static final int SAFE_KEY_CHARGE_TICK = 3;
-    private static final int SAFE_KEY_SHIELD_TICK = 6;
-    private static final int SAFE_KEY_DETONATE_TICK = 9;
 
     public AutoAnchor() {
         super("AutoAnchor", "Fills and explodes anchors with randomized patterns.", Category.COMBAT);
@@ -186,28 +179,18 @@ public class AutoAnchor extends Module {
             return;
         }
 
-        if (this.safeKeyState != SafeKeyState.IDLE && this.safeKeyState != SafeKeyState.WAIT_DETONATE) {
-            this.safeKeyCycleTick++;
-        }
-
         switch (this.safeKeyState) {
             case IDLE:
                 this.safeKeyPlaceAnchor();
                 break;
             case CHARGE:
-                if (this.safeKeyCycleTick >= SAFE_KEY_CHARGE_TICK) {
-                    this.safeKeyChargeAnchor();
-                }
+                this.safeKeyChargeAnchor();
                 break;
             case SHIELD:
-                if (this.safeKeyCycleTick >= SAFE_KEY_SHIELD_TICK) {
-                    this.safeKeyPlaceShield();
-                }
+                this.safeKeyPlaceShield();
                 break;
             case DETONATE:
-                if (this.safeKeyCycleTick >= SAFE_KEY_DETONATE_TICK) {
-                    this.safeKeyDetonate();
-                }
+                this.safeKeyDetonate();
                 break;
             case WAIT_DETONATE:
                 this.safeKeyWaitForDetonate();
@@ -230,7 +213,12 @@ public class AutoAnchor extends Module {
         // Server may have dropped the detonate packet - re-send it every 10
         // ticks so we don't sit forever waiting for a lost packet.
         if (this.safeKeyWaitTicks % 10 == 0 && this.mc.field_1761 != null && this.mc.field_1724 != null) {
-            this.mc.field_1724.method_31548().method_61496(6);
+            int restoreSlot = this.safeKeyOriginalSlot != -1
+                    ? this.safeKeyOriginalSlot
+                    : this.findNonGlowstoneSlot();
+            if (restoreSlot != -1) {
+                this.mc.field_1724.method_31548().method_61496(restoreSlot);
+            }
             this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808,
                     this.hitAt(this.safeKeyWaitPos, class_2350.field_11036));
         }
@@ -268,7 +256,6 @@ public class AutoAnchor extends Module {
         this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808, blockHit);
         this.safeKeyAnchorPos = anchorTarget;
         this.safeKeyState = SafeKeyState.CHARGE;
-        this.safeKeyCycleTick = 0;
     }
 
     private void safeKeyChargeAnchor() {
@@ -294,72 +281,63 @@ public class AutoAnchor extends Module {
         }
         int shieldSlot = this.findItemInHotbar(class_1802.field_8801);
         if (shieldSlot == -1) {
-            // Out of glowstone - can't shield, but also don't want to sit
-            // forever. Skip to detonate (previous behavior).
             this.safeKeyState = SafeKeyState.DETONATE;
             return;
         }
 
-        // Try every candidate, first one whose placement geometry actually
-        // works wins. If nothing is placeable, stay in SHIELD next tick and
-        // try again - don't detonate without a shield.
-        for (class_2338 shieldPos : this.shieldCandidates(this.safeKeyAnchorPos)) {
-            if (!this.mc.field_1687.method_8320(shieldPos).method_45474()) continue;
-            if (this.intersectsPlayer(shieldPos)) continue;
-            class_2338 placeAgainst = this.safeKeyAdjacentSolid(shieldPos);
-            if (placeAgainst == null) continue;
-            class_2350 face = class_2350.method_10147(
-                    shieldPos.method_10263() - placeAgainst.method_10263(),
-                    shieldPos.method_10264() - placeAgainst.method_10264(),
-                    shieldPos.method_10260() - placeAgainst.method_10260()
-            );
-            if (face == null) continue;
-            this.mc.field_1724.method_31548().method_61496(shieldSlot);
-            this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808, this.hitAt(placeAgainst, face));
+        class_2338 shieldPos = this.pickShieldPos(this.safeKeyAnchorPos);
+        if (shieldPos == null) {
+            System.out.println("[cyemer/autoanchor] safe key shield: no valid shield position found around " + this.safeKeyAnchorPos);
             this.safeKeyState = SafeKeyState.DETONATE;
             return;
         }
-        // Nothing worked this tick. Stay in SHIELD; loop again next tick.
+
+        class_2338 placeAgainst = this.safeKeyAdjacentSolid(shieldPos);
+        if (placeAgainst == null) {
+            System.out.println("[cyemer/autoanchor] safe key shield: no adjacent solid to place against " + shieldPos);
+            this.safeKeyState = SafeKeyState.DETONATE;
+            return;
+        }
+        class_2350 face = class_2350.method_10147(
+                shieldPos.method_10263() - placeAgainst.method_10263(),
+                shieldPos.method_10264() - placeAgainst.method_10264(),
+                shieldPos.method_10260() - placeAgainst.method_10260()
+        );
+        if (face == null) {
+            this.safeKeyState = SafeKeyState.DETONATE;
+            return;
+        }
+        this.mc.field_1724.method_31548().method_61496(shieldSlot);
+        this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808, this.hitAt(placeAgainst, face));
+        this.safeKeyState = SafeKeyState.DETONATE;
     }
 
     /**
-     * Full shield-candidate list around the anchor, prioritized:
-     *   1. Cardinal side facing the player at anchor Y (classic wall).
-     *   2. That same side one block up (chest level).
-     *   3. Directly above the anchor (vertical blast absorber).
-     *   4. All three remaining cardinal sides at anchor Y and Y+1.
-     * Way more coverage than the old 3-candidate list.
+     * Try shield positions in priority order:
+     *   1. Block adjacent to anchor on the cardinal side facing the player,
+     *      at anchor's Y (classic "wall between player and anchor").
+     *   2. Same, one block higher (chest level).
+     *   3. Directly above the anchor (blocks vertical blast).
+     * Skip any candidate that isn't replaceable or that intersects the player.
      */
-    private java.util.List<class_2338> shieldCandidates(class_2338 anchorPos) {
+    private class_2338 pickShieldPos(class_2338 anchorPos) {
         class_243 playerPos = this.mc.field_1724.method_73189();
         double dx = playerPos.field_1352 - (anchorPos.method_10263() + 0.5);
         double dz = playerPos.field_1350 - (anchorPos.method_10260() + 0.5);
-        class_2350 primary;
+        class_2350 toPlayer;
         if (Math.abs(dx) >= Math.abs(dz)) {
-            primary = dx >= 0 ? class_2350.field_11034 : class_2350.field_11039;
+            toPlayer = dx >= 0 ? class_2350.field_11034 : class_2350.field_11039;
         } else {
-            primary = dz >= 0 ? class_2350.field_11035 : class_2350.field_11043;
+            toPlayer = dz >= 0 ? class_2350.field_11035 : class_2350.field_11043;
         }
-        class_2350[] horizontals = {
-                primary,
-                class_2350.field_11034, class_2350.field_11039,
-                class_2350.field_11035, class_2350.field_11043
-        };
-        java.util.LinkedHashSet<class_2338> out = new java.util.LinkedHashSet<>();
-        // Priority 1: primary side at anchor Y.
-        out.add(anchorPos.method_10093(primary));
-        // Priority 2: primary side one up.
-        out.add(anchorPos.method_10093(primary).method_10084());
-        // Priority 3: anchor top.
-        out.add(anchorPos.method_10084());
-        // Priorities 4+: every other side at Y and Y+1.
-        for (class_2350 dir : horizontals) out.add(anchorPos.method_10093(dir));
-        for (class_2350 dir : horizontals) out.add(anchorPos.method_10093(dir).method_10084());
-        return new java.util.ArrayList<>(out);
-    }
 
-    private class_2338 pickShieldPos(class_2338 anchorPos) {
-        for (class_2338 candidate : this.shieldCandidates(anchorPos)) {
+        class_2338 sidePos = anchorPos.method_10093(toPlayer);
+        class_2338[] candidates = new class_2338[]{
+                sidePos,
+                sidePos.method_10084(),
+                anchorPos.method_10084()
+        };
+        for (class_2338 candidate : candidates) {
             if (!this.mc.field_1687.method_8320(candidate).method_45474()) continue;
             if (this.intersectsPlayer(candidate)) continue;
             return candidate;
@@ -377,10 +355,11 @@ public class AutoAnchor extends Module {
             this.safeKeyState = SafeKeyState.IDLE;
             return;
         }
-        // Detonate holding whatever is in slot 7 (hotbar index 6). User's
-        // hotbar contract: put a non-glowstone item there so the interact
-        // detonates instead of charging.
-        this.mc.field_1724.method_31548().method_61496(6);
+        // Switch to something non-glowstone so the interact detonates instead of charging.
+        int restoreSlot = this.safeKeyOriginalSlot != -1 ? this.safeKeyOriginalSlot : this.findNonGlowstoneSlot();
+        if (restoreSlot != -1) {
+            this.mc.field_1724.method_31548().method_61496(restoreSlot);
+        }
         this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808,
                 this.hitAt(this.safeKeyAnchorPos, class_2350.field_11036));
         this.safeKeyWaitPos = this.safeKeyAnchorPos;
@@ -398,7 +377,6 @@ public class AutoAnchor extends Module {
         this.safeKeyAnchorPos = null;
         this.safeKeyWaitPos = null;
         this.safeKeyWaitTicks = 0;
-        this.safeKeyCycleTick = 0;
         this.safeKeyState = SafeKeyState.IDLE;
     }
 
