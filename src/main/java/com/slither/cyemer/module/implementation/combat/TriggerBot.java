@@ -15,6 +15,7 @@ import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.class_1297;
 import net.minecraft.class_1309;
+import net.minecraft.class_1642;
 import net.minecraft.class_1657;
 import net.minecraft.class_1743;
 import net.minecraft.class_1792;
@@ -43,6 +44,7 @@ public class TriggerBot extends Module {
     private final SliderSetting randomDelayMs = new SliderSetting("Random Delay (ms)", 4.0, 0.0, 100.0, 0);
     private final BooleanSetting ignoreFriends = new BooleanSetting("Ignore Friends", true);
     private final BooleanSetting targetMode = new BooleanSetting("Target Mode", false);
+    private final BooleanSetting strayBypass = new BooleanSetting("Stray Bypass", false);
     private boolean wasInAir = false;
     private boolean hasPassedPeak = false;
     private int ticksAfterPeak = 0;
@@ -72,6 +74,7 @@ public class TriggerBot extends Module {
         this.addSetting(this.randomDelayMs);
         this.addSetting(this.ignoreFriends);
         this.addSetting(this.targetMode);
+        this.addSetting(this.strayBypass);
     }
 
     @Override
@@ -89,7 +92,10 @@ public class TriggerBot extends Module {
                     boolean isAttackKeyPressed = this.mc.field_1690.field_1886.method_1434();
                     boolean manualAttack = isAttackKeyPressed && !this.wasAttackKeyPressed;
                     this.wasAttackKeyPressed = isAttackKeyPressed;
-                    if (this.mc.field_1765 instanceof class_3966 entityHit && entityHit.method_17782() instanceof class_1309 target) {
+                    if (this.mc.field_1765 instanceof class_3966 entityHit
+                            && entityHit.method_17782() instanceof class_1309 target
+                            && (target instanceof class_1657
+                                    || (this.strayBypass.isEnabled() && target instanceof class_1642))) {
                         if (!target.method_5805() || target.method_6032() <= 0.0F) {
                             this.resetCritState();
                             return;
