@@ -13,7 +13,7 @@ import net.minecraft.class_3675;
 
 @Environment(EnvType.CLIENT)
 public class WTap extends Module {
-    private final SliderSetting wtapDuration = new SliderSetting("WTap Duration (ms)", 50.0, 10.0, 200.0, 0);
+    private final SliderSetting wtapDuration = new SliderSetting("WTap Duration (ms)", 50.0, 10.0, 1000.0, 0);
     private final BooleanSetting onlyOnGround = new BooleanSetting("Only On Ground", false);
     private boolean isTapping = false;
     private long tapEndTimestamp = 0L;
