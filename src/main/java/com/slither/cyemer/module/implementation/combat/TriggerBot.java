@@ -93,9 +93,7 @@ public class TriggerBot extends Module {
                     boolean manualAttack = isAttackKeyPressed && !this.wasAttackKeyPressed;
                     this.wasAttackKeyPressed = isAttackKeyPressed;
                     if (this.mc.field_1765 instanceof class_3966 entityHit
-                            && entityHit.method_17782() instanceof class_1309 target
-                            && (target instanceof class_1657
-                                    || (this.strayBypass.isEnabled() && target instanceof class_1642))) {
+                            && entityHit.method_17782() instanceof class_1309 target) {
                         if (!target.method_5805() || target.method_6032() <= 0.0F) {
                             this.resetCritState();
                             return;
