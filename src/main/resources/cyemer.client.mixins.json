@@ -5,6 +5,7 @@
   "compatibilityLevel": "JAVA_21",
   "client": [
     "ChatHudMixin",
+    "ClientConnectionMixin",
     "ClientPlayerInteractionManagerMixin",
     "ClientPlayerInteractionManagerMixin$ClientPlayerInteractionManagerAccessor",
     "ClientPlayNetworkHandlerMixin",
