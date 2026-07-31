@@ -22,6 +22,7 @@ import com.slither.cyemer.module.implementation.HoverTotem;
 import com.slither.cyemer.module.implementation.HudEditor;
 import com.slither.cyemer.module.implementation.Interface;
 import com.slither.cyemer.module.implementation.KeyPearl;
+import com.slither.cyemer.module.implementation.LagReach;
 import com.slither.cyemer.module.implementation.MaceSwap;
 import com.slither.cyemer.module.implementation.NoBreakDelay;
 import com.slither.cyemer.module.implementation.NPotRefill;
@@ -154,6 +155,7 @@ public class ModuleManager {
         this.modules.add(new PotRefill());
         this.modules.add(new NPotRefill());
         this.modules.add(new StreamProof());
+        this.modules.add(new LagReach());
     }
 
     public void onTick() {

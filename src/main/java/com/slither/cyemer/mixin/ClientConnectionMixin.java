@@ -32,6 +32,13 @@ public class ClientConnectionMixin {
                     && fakelag.isEnabled()
                     && ModuleAccess.invokeBoolean(fakelag, "handleOutgoingPacket", false, new Class[]{class_2596.class}, packet)) {
                     ci.cancel();
+                    return;
+                }
+                Module lagReach = ModuleAccess.getModule("LagReach");
+                if (lagReach != null
+                    && lagReach.isEnabled()
+                    && ModuleAccess.invokeBoolean(lagReach, "handleOutgoingPacket", false, new Class[]{class_2596.class}, packet)) {
+                    ci.cancel();
                 }
             }
         }
