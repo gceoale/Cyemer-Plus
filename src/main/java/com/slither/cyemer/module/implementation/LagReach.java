@@ -8,28 +8,29 @@ import java.util.Deque;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.class_2596;
-import net.minecraft.class_2828;
+import net.minecraft.class_2827;
+import net.minecraft.class_6374;
 
 /**
- * Extra melee reach via server-side position lag.
+ * Extra reach via inflated ping.
  *
- * How it works: outgoing PlayerMove (class_2828 + subclasses) packets are
- * held in a queue for `Delay (ms)` before being released. Meanwhile every
- * other packet - attacks, interacts, item use - passes straight through.
- * The server's copy of your position keeps trailing behind the client's
- * by the delay duration, so when you attack, the reach check runs from
- * that older server-side position. If a target has moved closer to that
- * older position (chasing / strafing in), the reach check accepts a
- * click that would normally be out of range.
+ * Holds outgoing CommonPongC2SPacket (class_6374) and KeepAliveC2SPacket
+ * (class_2827) for `Delay (ms)` before releasing. The server measures
+ * RTT off these; a later reply looks like real latency. Grim uses its
+ * ping window to rewind target positions during reach checks, so an
+ * inflated ping means the check runs against the target's older
+ * position - if the target has since moved further, a hit that would
+ * normally exceed reach still lands. Position packets are untouched,
+ * so Simulation / Timer / PacketOrder stay clean.
  */
 @Environment(EnvType.CLIENT)
 public class LagReach extends Module {
-    private final SliderSetting delay = new SliderSetting("Delay (ms)", 150.0, 20.0, 500.0, 0);
+    private final SliderSetting delay = new SliderSetting("Delay (ms)", 100.0, 20.0, 250.0, 0);
     private final Deque<Queued> queue = new ArrayDeque<>();
     private boolean flushing = false;
 
     public LagReach() {
-        super("LagReach", "Delays position packets so server-side reach checks run from an older spot.", Category.PLAYER);
+        super("LagReach", "Delays pong/keepalive replies to inflate perceived ping so reach checks rewind targets further.", Category.PLAYER);
         this.addSetting(this.delay);
     }
 
@@ -56,18 +57,13 @@ public class LagReach extends Module {
         }
     }
 
-    /**
-     * Called by ClientConnectionMixin for every outgoing packet. Returns
-     * true to cancel the send (we'll send it ourselves later); false to
-     * let the vanilla path continue.
-     */
     public boolean handleOutgoingPacket(class_2596<?> packet) {
         if (this.flushing) return false;
         if (this.mc.field_1724 == null || this.mc.method_1562() == null) {
             this.flushAll();
             return false;
         }
-        if (packet instanceof class_2828) {
+        if (packet instanceof class_6374 || packet instanceof class_2827) {
             this.queue.addLast(new Queued(packet, System.currentTimeMillis()));
             return true;
         }
