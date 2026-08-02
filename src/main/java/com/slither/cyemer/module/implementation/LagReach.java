@@ -39,8 +39,8 @@ public class LagReach extends Module {
     private static final long MAX_HOLD_MS = 400L;
     private static LagReach instance;
 
-    private final SliderSetting delay = new SliderSetting("Delay (ms)", 100.0, 20.0, 300.0, 0);
-    private final SliderSetting reachBonus = new SliderSetting("Reach (blocks)", 0.3, 0.0, 0.5, 2);
+    private final SliderSetting delay = new SliderSetting("Delay (ms)", 60.0, 20.0, 150.0, 0);
+    private final SliderSetting reachBonus = new SliderSetting("Reach (blocks)", 0.05, 0.0, 0.1, 2);
     private final BooleanSetting combatOnly = new BooleanSetting("Combat Only", true);
     private final SliderSetting combatWindow = new SliderSetting("Combat Window (ms)", 1500.0, 500.0, 5000.0, 0);
     private final BooleanSetting showHud = new BooleanSetting("Show HUD", true);
