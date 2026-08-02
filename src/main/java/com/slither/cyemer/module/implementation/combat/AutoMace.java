@@ -75,6 +75,7 @@ public class AutoMace extends Module {
     private final BooleanSetting autoBoost = new BooleanSetting("Auto Boost", false);
     private final SliderSetting boostRange = new SliderSetting("Boost Range", 4.0, 2.0, 8.0, 1);
     private final BooleanSetting elytraDive = new BooleanSetting("Elytra Dive", true);
+    private final BooleanSetting silentAim = new BooleanSetting("Silent Aim", false);
 
     private class_1657 currentTarget = null;
     private int maceClicksLeft = 0;
@@ -125,6 +126,7 @@ public class AutoMace extends Module {
         this.addSetting(this.autoBoost);
         this.addSetting(this.boostRange);
         this.addSetting(this.elytraDive);
+        this.addSetting(this.silentAim);
     }
 
     @Override
@@ -353,7 +355,7 @@ public class AutoMace extends Module {
         RotationManager.setRotationSupplier(this, RotationManager.Priority.HIGHEST, () -> {
             if (this.mc.field_1724 == null) return null;
             return this.mc.field_1724.method_73189().method_1031(0.0, -5.0, 0.0);
-        }, this.rotationSpeed.getValue(), RotationManager.RotationMode.SMOOTH, 0.0, true, false);
+        }, this.rotationSpeed.getValue(), RotationManager.RotationMode.SMOOTH, 0.0, this.silentAim.isEnabled(), false);
         this.boostState = BoostState.AIMING;
         this.boostTicks = 3;
         return true;
@@ -783,7 +785,7 @@ public class AutoMace extends Module {
                     } else {
                         return null;
                     }
-                }, this.rotationSpeed.getValue(), RotationManager.RotationMode.SMOOTH, 0.0, false, true);
+                }, this.rotationSpeed.getValue(), RotationManager.RotationMode.SMOOTH, 0.0, this.silentAim.isEnabled(), true);
             } else {
                 RotationManager.setRotationSupplier(
                     this,
@@ -792,7 +794,7 @@ public class AutoMace extends Module {
                     this.rotationSpeed.getValue(),
                     RotationManager.RotationMode.SMOOTH,
                     0.0,
-                    false,
+                    this.silentAim.isEnabled(),
                     false
                 );
             }
