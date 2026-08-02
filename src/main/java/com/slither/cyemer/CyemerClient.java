@@ -59,6 +59,12 @@ public class CyemerClient implements ClientModInitializer {
                 }
             }
         });
+        HudRenderCallback.EVENT.register((HudRenderCallback)(drawContext, tickDelta) -> {
+            com.slither.cyemer.module.implementation.LagReach lr = com.slither.cyemer.module.implementation.LagReach.getInstance();
+            if (lr != null && lr.isEnabled()) {
+                lr.onHudRender(drawContext, tickDelta);
+            }
+        });
         LogCleaner.clean();
     }
 

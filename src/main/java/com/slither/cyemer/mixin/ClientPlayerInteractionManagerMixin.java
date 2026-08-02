@@ -47,6 +47,11 @@ public class ClientPlayerInteractionManagerMixin {
         if (wTapModule != null && wTapModule.isEnabled()) {
             ModuleAccess.invoke(wTapModule, "onAttack", null);
         }
+
+        Module lagReachModule = Cyemer.getInstance().getModuleManager().getModule("LagReach");
+        if (lagReachModule != null && lagReachModule.isEnabled()) {
+            ModuleAccess.invoke(lagReachModule, "notifyAttack", null);
+        }
     }
 
     @Inject(

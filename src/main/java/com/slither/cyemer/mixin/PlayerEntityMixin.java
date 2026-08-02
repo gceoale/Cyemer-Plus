@@ -2,6 +2,7 @@ package com.slither.cyemer.mixin;
 
 import com.slither.cyemer.Cyemer;
 import com.slither.cyemer.module.Module;
+import com.slither.cyemer.module.implementation.LagReach;
 import com.slither.cyemer.util.ModuleAccess;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
@@ -30,6 +31,22 @@ public class PlayerEntityMixin {
                 String originalName = self.method_5477().getString();
                 String finalName = ModuleAccess.invokeString(nickModule, "getSafeNickname", originalName, new Class[]{String.class}, originalName);
                 cir.setReturnValue(class_2561.method_30163(finalName));
+            }
+        }
+    }
+
+    @Inject(
+        method = {"method_55755()D"},
+        at = {@At("RETURN")},
+        cancellable = true
+    )
+    private void onGetEntityInteractionRange(CallbackInfoReturnable<Double> cir) {
+        class_1657 self = (class_1657)(Object)this;
+        class_310 mc = class_310.method_1551();
+        if (mc.field_1724 != null && mc.field_1724.equals(self)) {
+            LagReach lr = LagReach.getInstance();
+            if (lr != null && lr.isEnabled()) {
+                cir.setReturnValue(cir.getReturnValueD() + lr.getReachBonus());
             }
         }
     }
