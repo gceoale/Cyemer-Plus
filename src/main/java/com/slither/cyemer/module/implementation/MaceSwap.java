@@ -9,8 +9,10 @@ import com.slither.cyemer.util.AttackValidator;
 import com.slither.cyemer.util.ModuleRandomDelay;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.minecraft.class_1294;
 import net.minecraft.class_1297;
 import net.minecraft.class_1309;
+import net.minecraft.class_1657;
 import net.minecraft.class_1743;
 import net.minecraft.class_1799;
 import net.minecraft.class_1802;
@@ -28,6 +30,7 @@ import net.minecraft.class_239.class_240;
 public class MaceSwap extends Module {
     private final BooleanSetting notOnAxe = new BooleanSetting("Not on Axe (stunslam)", true);
     private final BooleanSetting weaponOnly = new BooleanSetting("Weapon Only", true);
+    private final BooleanSetting critOnlyBreach = new BooleanSetting("Crit Only Breach", false);
     private final BooleanSetting randomization = new BooleanSetting("Randomization", false);
     private final SliderSetting densityHeight = new SliderSetting("Density Height", 3.0, 0.0, 10.0, 1);
     private final SliderSetting randomMinDelay = new SliderSetting("Random Min (ms)", 0.0, 0.0, 500.0, 0);
@@ -42,6 +45,7 @@ public class MaceSwap extends Module {
         super("MaceSwap", "Automatically swaps to mace and attacks", Category.COMBAT);
         this.addSetting(this.notOnAxe);
         this.addSetting(this.weaponOnly);
+        this.addSetting(this.critOnlyBreach);
         this.addSetting(this.densityHeight);
         this.addSetting(this.randomization);
         this.addSetting(this.randomMinDelay);
@@ -123,6 +127,9 @@ public class MaceSwap extends Module {
                                 maceSlot = this.findMaceInHotbar();
                             }
                         } else {
+                            if (this.critOnlyBreach.isEnabled() && !this.isCriticalAttack(this.mc.field_1724, target)) {
+                                return false;
+                            }
                             maceSlot = this.findMaceByEnchantment(class_1893.field_50158);
                             if (maceSlot == -1) {
                                 return false;
@@ -146,6 +153,22 @@ public class MaceSwap extends Module {
         } else {
             return false;
         }
+    }
+
+    /**
+     * Mirrors vanilla PlayerEntity.attack() crit conditions: airborne with fall
+     * distance, not sprinting, not climbing, not in water, no blindness, not
+     * riding, hitting a LivingEntity. Sprint disables crits in vanilla.
+     */
+    private boolean isCriticalAttack(class_1657 attacker, class_1297 target) {
+        return attacker.field_6017 > 0.0F
+            && !attacker.method_24828()
+            && !attacker.method_6101()
+            && !attacker.method_5799()
+            && !attacker.method_6059(class_1294.field_5919)
+            && !attacker.method_5765()
+            && !attacker.method_5624()
+            && target instanceof class_1309;
     }
 
     private boolean isWeapon(class_1799 stack) {
