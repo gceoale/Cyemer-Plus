@@ -36,8 +36,8 @@ public class BowAimbot extends Module {
     private final BooleanSetting ignoreFriends = new BooleanSetting("Ignore Friends", true);
     private final BooleanSetting predict = new BooleanSetting("Lead Target", true);
     private final BooleanSetting predictGravity = new BooleanSetting("Predict Gravity", true);
-    private final ModeSetting rotationMode = new ModeSetting("Rotation", "Smooth", "Sine", "Linear");
-    private final SliderSetting rotationSpeed = new SliderSetting("Rotation Speed", 10.0, 1.0, 20.0, 1);
+    private final ModeSetting rotationMode = new ModeSetting("Rotation", "Linear", "Smooth", "Sine", "FPS", "Instant");
+    private final SliderSetting rotationSpeed = new SliderSetting("Rotation Speed", 18.0, 1.0, 30.0, 1);
     private final SliderSetting randomness = new SliderSetting("Randomness", 0.0, 0.0, 1.0, 2);
     private final BooleanSetting silent = new BooleanSetting("Silent", false);
     private final BooleanSetting autoShoot = new BooleanSetting("Auto Shoot", false);
@@ -114,31 +114,20 @@ public class BowAimbot extends Module {
     }
 
     private void performAiming(boolean isBow) {
-        float velocity = this.getWeaponVelocity();
-        class_243 eyePos = this.mc.field_1724.method_33571();
-        class_243 leadPos = this.getLeadPosition(this.currentTarget, velocity);
-        double aimYOffset = this.getYOffset(this.currentTarget);
-
-        double dx = leadPos.field_1352 - eyePos.field_1352;
-        double dz = leadPos.field_1350 - eyePos.field_1350;
-        double horizontalDist = Math.sqrt(dx * dx + dz * dz);
-        double dy = leadPos.field_1351 + aimYOffset - eyePos.field_1351;
-
-        float pitch = this.solvePitch(velocity, horizontalDist, dy);
-        double yOffset = Math.tan(Math.toRadians(-pitch)) * horizontalDist;
-        class_243 aimPoint = new class_243(leadPos.field_1352, eyePos.field_1351 + yOffset, leadPos.field_1350);
-
         RotationManager.RotationMode mode;
         try {
             mode = RotationManager.RotationMode.valueOf(this.rotationMode.getCurrentMode().toUpperCase());
         } catch (Exception e) {
-            mode = RotationManager.RotationMode.SMOOTH;
+            mode = RotationManager.RotationMode.LINEAR;
         }
 
+        // Live supplier: recomputed every RotationManager update tick so lead
+        // tracks the target's current position rather than a snapshot from
+        // when performAiming last ran.
         RotationManager.setRotationSupplier(
             this,
             RotationManager.Priority.HIGH,
-            () -> aimPoint,
+            this::computeAimPoint,
             this.rotationSpeed.getValue(),
             mode,
             this.randomness.getValue(),
@@ -146,10 +135,30 @@ public class BowAimbot extends Module {
             false
         );
 
-        this.lockedPitch = pitch;
-        float[] rot = RotationManager.calculateRotationsToPos(aimPoint, RotationManager.getFinalYaw());
-        this.lockedYaw = rot[0];
-        this.hasLockedRotation = true;
+        class_243 aimPoint = this.computeAimPoint();
+        if (aimPoint != null) {
+            float[] rot = RotationManager.calculateRotationsToPos(aimPoint, RotationManager.getFinalYaw());
+            this.lockedYaw = rot[0];
+            this.lockedPitch = rot[1];
+            this.hasLockedRotation = true;
+        } else {
+            this.hasLockedRotation = false;
+        }
+    }
+
+    private class_243 computeAimPoint() {
+        if (this.currentTarget == null || !this.currentTarget.method_5805() || this.mc.field_1724 == null) return null;
+        float velocity = this.getWeaponVelocity();
+        class_243 eyePos = this.mc.field_1724.method_33571();
+        class_243 leadPos = this.getLeadPosition(this.currentTarget, velocity);
+        double aimYOffset = this.getYOffset(this.currentTarget);
+        double dx = leadPos.field_1352 - eyePos.field_1352;
+        double dz = leadPos.field_1350 - eyePos.field_1350;
+        double horizontalDist = Math.sqrt(dx * dx + dz * dz);
+        double dy = leadPos.field_1351 + aimYOffset - eyePos.field_1351;
+        float pitch = this.solvePitch(velocity, horizontalDist, dy);
+        double yOffset = Math.tan(Math.toRadians(-pitch)) * horizontalDist;
+        return new class_243(leadPos.field_1352, eyePos.field_1351 + yOffset, leadPos.field_1350);
     }
 
     private void tryAutoShoot(boolean isBow, boolean isChargedCrossbow, class_1799 mainHand) {
@@ -265,25 +274,25 @@ public class BowAimbot extends Module {
      * the full range and got the wrong side of the maximum for far targets.
      */
     private float solvePitch(float velocity, double horizontalDist, double targetDy) {
-        // Low arc first (fast, less time for target to dodge).
-        Float low = this.bisectPitch(velocity, horizontalDist, targetDy, -89.0F, 45.0F, true);
-        if (low != null) return low;
-        // High arc fallback (mortar shot for distant/high targets).
-        Float high = this.bisectPitch(velocity, horizontalDist, targetDy, 45.0F, 89.0F, false);
-        if (high != null) return high;
-        // No solution; aim direct-line as best-effort.
-        return (float) Math.toDegrees(Math.atan2(targetDy, horizontalDist));
+        // Try low arc first (fast arrival, less time for target to dodge).
+        BisectResult low = this.bisectPitch(velocity, horizontalDist, targetDy, -89.0F, 45.0F, true);
+        // If low arc missed by more than 0.5 blocks, try high arc and pick better.
+        if (low.error > 0.5) {
+            BisectResult high = this.bisectPitch(velocity, horizontalDist, targetDy, 45.0F, 89.0F, false);
+            if (high.error < low.error) return high.pitch;
+        }
+        return low.pitch;
     }
 
-    private Float bisectPitch(float velocity, double horizontalDist, double targetDy, float lo, float hi, boolean risingArc) {
-        float best = lo;
+    private BisectResult bisectPitch(float velocity, double horizontalDist, double targetDy, float lo, float hi, boolean risingArc) {
+        float best = (lo + hi) / 2.0F;
         double bestErr = Double.MAX_VALUE;
         for (int i = 0; i < 30; i++) {
             float mid = (lo + hi) / 2.0F;
             double hitY = this.simulateArrow(velocity, mid, horizontalDist);
             if (Double.isInfinite(hitY)) {
-                // Arrow didn't reach horizontalDist within MAX_SIM_TICKS.
-                // For rising arc (low), need more pitch to add horizontal via arc; for high arc, less pitch.
+                // Arrow can't reach horizontalDist within MAX_SIM_TICKS.
+                // Low arc: need more pitch to add reach via arc; high arc: less pitch.
                 if (risingArc) lo = mid;
                 else hi = mid;
                 continue;
@@ -293,14 +302,16 @@ public class BowAimbot extends Module {
                 bestErr = Math.abs(err);
                 best = mid;
             }
-            if (Math.abs(err) < 0.02) return mid;
-            // On the rising arc, hitY increases with pitch. On the falling (high) arc, it decreases.
+            if (Math.abs(err) < 0.02) return new BisectResult(mid, Math.abs(err));
+            // Rising arc: hitY grows with pitch; falling arc: shrinks with pitch.
             boolean tooLow = err < 0;
             if (risingArc == tooLow) lo = mid;
             else hi = mid;
         }
-        return bestErr < 1.5 ? best : null;
+        return new BisectResult(best, bestErr);
     }
+
+    private record BisectResult(float pitch, double error) {}
 
     /**
      * Simulate arrow trajectory. Returns Y at the moment X crosses target dist,
