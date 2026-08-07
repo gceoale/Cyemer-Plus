@@ -65,6 +65,7 @@ import com.slither.cyemer.module.implementation.combat.PearlMacro;
 import com.slither.cyemer.module.implementation.combat.Shielddrain;
 import com.slither.cyemer.module.implementation.combat.TriggerBot;
 import com.slither.cyemer.module.implementation.combat.WTap;
+import com.slither.cyemer.module.implementation.combat.WindChargeHitter;
 import com.slither.cyemer.module.implementation.combat.XbowCart;
 import com.slither.cyemer.module.implementation.movement.SafeWalk;
 import com.slither.cyemer.module.implementation.movement.SnapTap;
@@ -156,6 +157,7 @@ public class ModuleManager {
         this.modules.add(new NPotRefill());
         this.modules.add(new StreamProof());
         this.modules.add(new LagReach());
+        this.modules.add(new WindChargeHitter());
     }
 
     public void onTick() {
