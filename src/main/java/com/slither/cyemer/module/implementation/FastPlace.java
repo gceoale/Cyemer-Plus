@@ -22,6 +22,7 @@ import net.minecraft.class_4537;
 public class FastPlace extends Module {
     private final ModeSetting filter = new ModeSetting("Filter", "All", "Blocks", "EXP Bottles", "Projectiles");
     private final SliderSetting cooldown = new SliderSetting("Cooldown", 0.0, 0.0, 4.0, 0);
+    private final BooleanSetting crystalOnly = new BooleanSetting("Crystal Only", false);
     private final BooleanSetting noAnchor = new BooleanSetting("No Anchor", false);
     private final BooleanSetting noGlowstone = new BooleanSetting("No Glowstone", false);
 
@@ -29,6 +30,7 @@ public class FastPlace extends Module {
         super("FastPlace", "Removes the delay between placing blocks.", Category.PLAYER);
         this.addSetting(this.filter);
         this.addSetting(this.cooldown);
+        this.addSetting(this.crystalOnly);
         this.addSetting(this.noAnchor);
         this.addSetting(this.noGlowstone);
     }
@@ -55,6 +57,9 @@ public class FastPlace extends Module {
             return false;
         } else {
             class_1792 item = stack.method_7909();
+            if (this.crystalOnly.isEnabled()) {
+                return item instanceof class_1771;
+            }
             String currentMode = this.filter.getCurrentMode();
             if (item instanceof class_1747 blockItem) {
                 if (this.noAnchor.isEnabled() && blockItem.method_7711() == class_2246.field_23152) {
