@@ -12,6 +12,7 @@ import com.slither.cyemer.module.Module;
 import com.slither.cyemer.module.SliderSetting;
 import com.slither.cyemer.util.AttackValidator;
 import java.util.Random;
+import java.util.UUID;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.class_1297;
@@ -31,25 +32,34 @@ import net.minecraft.class_239.class_240;
 
 @Environment(EnvType.CLIENT)
 public class TriggerBot extends Module {
+    /**
+     * A remote entity's hurtTime is only set when the server's damage packet
+     * arrives, so a landed hit shows up somewhere between 1 tick and a full
+     * round trip later. Credit any damage seen on the target within this many
+     * ticks of our swing as ours.
+     */
+    private static final int HIT_CREDIT_TICKS = 10;
     /** Ticks a landed hit keeps the combo alive. */
     private static final int COMBO_WINDOW_TICKS = 20;
+    /** No landed hit for this long means the next swing is opening an exchange. */
+    private static final int OPENING_IDLE_TICKS = 40;
     /** Vanilla axe shield disable lasts 100 ticks; stay aggressive slightly under that. */
     private static final long SHIELD_DISABLE_MS = 4500L;
-    /** Consecutive non-registering swings before the adaptive layer backs off. */
-    private static final int MISS_BACKOFF_COUNT = 3;
-    private static final long MISS_BACKOFF_MS = 250L;
+    private static final long MISS_BACKOFF_MS = 200L;
 
     private final BooleanSetting adaptive = new BooleanSetting("Adaptive", true);
+    private final BooleanSetting openingBurst = new BooleanSetting("Opening Burst", true);
     private final BooleanSetting critPrio = new BooleanSetting("Crit Prio", true);
-    private final SliderSetting critWaitMax = new SliderSetting("Crit Wait Max (ticks)", 12.0, 0.0, 40.0, 0);
+    private final SliderSetting critWaitMax = new SliderSetting("Crit Wait Max (ticks)", 5.0, 0.0, 40.0, 0);
     private final ModeSetting shieldPolicy = new ModeSetting("Shields", "Smart", "Skip", "Attack");
     private final BooleanSetting hurtTimeGate = new BooleanSetting("Hurt Time Gate", true);
     private final BooleanSetting punishItems = new BooleanSetting("Punish Items", true);
     private final BooleanSetting comboMode = new BooleanSetting("Combo Mode", true);
     private final BooleanSetting finisher = new BooleanSetting("Finisher", true);
     private final SliderSetting finishHp = new SliderSetting("Finish HP", 6.0, 0.0, 20.0, 1);
-    private final SliderSetting punishCooldown = new SliderSetting("Punish Cooldown %", 85.0, 0.0, 100.0, 0);
-    private final BooleanSetting missAdapt = new BooleanSetting("Miss Backoff", true);
+    private final SliderSetting punishCooldown = new SliderSetting("Punish Cooldown %", 90.0, 0.0, 100.0, 0);
+    private final BooleanSetting missAdapt = new BooleanSetting("Miss Backoff", false);
+    private final SliderSetting missBackoffCount = new SliderSetting("Miss Backoff Count", 5.0, 2.0, 15.0, 0);
     private final BooleanSetting onlyOnLmb = new BooleanSetting("Only on LMB", false);
     private final BooleanSetting ignoreShields = new BooleanSetting("Ignore Shields", false);
     private final BooleanSetting onlyWeapons = new BooleanSetting("Only Weapons", false);
@@ -79,10 +89,11 @@ public class TriggerBot extends Module {
     private class_1309 lockedTarget = null;
     private boolean wasAttackKeyPressed = false;
 
-    private class_1309 pendingVerifyTarget = null;
-    private int pendingVerifyTick = -1;
-    private boolean pendingVerifyWasBlocking = false;
-    private boolean pendingVerifyWithAxe = false;
+    private UUID trackedTargetId = null;
+    private int trackedHurtTime = 0;
+    private int pendingSwingTick = -1;
+    private boolean pendingSwingIntoBlock = false;
+    private boolean pendingSwingWithAxe = false;
     private int lastLandedTick = -10000;
     private int consecutiveMisses = 0;
     private long shieldDisabledUntilMs = 0L;
@@ -91,6 +102,7 @@ public class TriggerBot extends Module {
     public TriggerBot() {
         super("TriggerBot", "Automatically attacks when looking at an entity", Category.COMBAT);
         this.addSetting(this.adaptive);
+        this.addSetting(this.openingBurst);
         this.addSetting(this.critPrio);
         this.addSetting(this.critWaitMax);
         this.addSetting(this.shieldPolicy);
@@ -101,6 +113,7 @@ public class TriggerBot extends Module {
         this.addSetting(this.finishHp);
         this.addSetting(this.punishCooldown);
         this.addSetting(this.missAdapt);
+        this.addSetting(this.missBackoffCount);
         this.addSetting(this.onlyOnLmb);
         this.addSetting(this.ignoreShields);
         this.addSetting(this.onlyWeapons);
@@ -129,8 +142,6 @@ public class TriggerBot extends Module {
             return;
         }
 
-        this.resolvePendingHit();
-
         if (this.mc.field_1724.method_6115()) {
             this.lastItemUseTime = System.currentTimeMillis();
             this.resetCritState();
@@ -146,9 +157,12 @@ public class TriggerBot extends Module {
         this.wasAttackKeyPressed = isAttackKeyPressed;
 
         if (!(this.mc.field_1765 instanceof class_3966 entityHit) || !(entityHit.method_17782() instanceof class_1309 target)) {
+            this.trackDamage(null);
             this.resetCritState();
             return;
         }
+
+        this.trackDamage(target);
 
         if (!target.method_5805() || target.method_6032() <= 0.0F) {
             this.resetCritState();
@@ -219,15 +233,20 @@ public class TriggerBot extends Module {
             return;
         }
 
-        boolean urgent = smart && this.isUrgent(target, currentTime);
+        // Tempo urgency: take the hit now rather than hold for a better one.
+        boolean skipCrit = smart && this.shouldSkipCrit(target, currentTime);
+        // Damage urgency: a slightly under-charged hit beats no hit at all,
+        // but only when landing it *now* is what matters (interrupting an
+        // item use, or closing out a target who is about to die).
+        boolean relaxCooldown = smart && this.shouldRelaxCooldown(target);
 
-        if (smart && this.hurtTimeGate.isEnabled() && !urgent && target.field_6235 > 1) {
+        if (smart && this.hurtTimeGate.isEnabled() && !relaxCooldown && target.field_6235 > 3) {
             return;
         }
 
         double cooldownProgress = this.mc.field_1724.method_7261(0.5F);
         double threshold = this.cooldownThreshold.getValue() / 100.0;
-        if (urgent) {
+        if (relaxCooldown) {
             threshold = Math.min(threshold, this.punishCooldown.getValue() / 100.0);
         }
         if (cooldownProgress < threshold) {
@@ -242,8 +261,7 @@ public class TriggerBot extends Module {
 
         if (this.critPrio.isEnabled() && this.shouldWaitForCrit()) {
             this.critWaitTicks++;
-            boolean giveUpWaiting = smart
-                && (urgent || this.critWaitTicks > (int) this.critWaitMax.getValue());
+            boolean giveUpWaiting = smart && (skipCrit || this.critWaitTicks > (int) this.critWaitMax.getValue());
             if (!giveUpWaiting) {
                 return;
             }
@@ -260,23 +278,34 @@ public class TriggerBot extends Module {
     }
 
     /**
-     * A swing is "urgent" when waiting costs more than a slightly weaker hit:
-     * the target is mid item-use (eating, potting, drawing a bow) and eating
-     * a hit cancels it, the target is nearly dead, we are mid-combo and want
-     * to keep the knockback chain alive, or we just axe-disabled their shield
-     * and the free-hit window is ticking down.
+     * Reasons to stop holding a swing for a crit. Waiting costs tempo, and a
+     * hit that never lands does zero damage, so any of these beat a crit:
+     * we are opening an exchange and want the first hit in, the combo is live
+     * and jumping would drop the knockback chain, the target is mid item-use,
+     * they are nearly dead, or their shield is disabled and the clock is running.
      */
-    private boolean isUrgent(class_1309 target, long now) {
-        if (this.punishItems.isEnabled() && this.isTargetUsingNonShield(target)) {
-            return true;
-        }
-        if (this.finisher.isEnabled() && this.effectiveHealth(target) <= this.finishHp.getValue()) {
+    private boolean shouldSkipCrit(class_1309 target, long now) {
+        if (this.openingBurst.isEnabled() && this.isOpening()) {
             return true;
         }
         if (this.comboMode.isEnabled() && this.inCombo()) {
             return true;
         }
-        return now < this.shieldDisabledUntilMs;
+        if (now < this.shieldDisabledUntilMs) {
+            return true;
+        }
+        return this.shouldRelaxCooldown(target);
+    }
+
+    private boolean shouldRelaxCooldown(class_1309 target) {
+        if (this.punishItems.isEnabled() && this.isTargetUsingNonShield(target)) {
+            return true;
+        }
+        return this.finisher.isEnabled() && this.effectiveHealth(target) <= this.finishHp.getValue();
+    }
+
+    private boolean isOpening() {
+        return this.mc.field_1724 != null && this.mc.field_1724.field_6012 - this.lastLandedTick > OPENING_IDLE_TICKS;
     }
 
     private boolean inCombo() {
@@ -321,33 +350,44 @@ public class TriggerBot extends Module {
     }
 
     /**
-     * One tick after a swing, a landed hit shows up as the target's hurtTime
-     * being refreshed. Missing repeatedly means the hits are not registering
-     * (desync, blocked, out of server-side reach), so back off briefly instead
-     * of machine-gunning clicks that go nowhere.
+     * Watches the target's hurtTime for a rising edge, which is how a landed
+     * hit becomes visible on the client once the server's damage packet lands.
+     * Damage seen within HIT_CREDIT_TICKS of our swing counts as ours and
+     * keeps the combo clock alive.
      */
-    private void resolvePendingHit() {
-        if (this.pendingVerifyTarget == null || this.mc.field_1724 == null) {
+    private void trackDamage(class_1309 target) {
+        if (target == null || this.mc.field_1724 == null) {
+            this.trackedTargetId = null;
+            this.trackedHurtTime = 0;
             return;
         }
+
         int clientTick = this.mc.field_1724.field_6012;
-        if (clientTick < this.pendingVerifyTick) {
+        UUID id = target.method_5667();
+        if (!id.equals(this.trackedTargetId)) {
+            this.trackedTargetId = id;
+            this.trackedHurtTime = target.field_6235;
             return;
         }
 
-        class_1309 verified = this.pendingVerifyTarget;
-        this.pendingVerifyTarget = null;
+        int hurtNow = target.field_6235;
+        boolean tookDamage = hurtNow > this.trackedHurtTime;
+        this.trackedHurtTime = hurtNow;
 
-        boolean landed = verified.method_5805() && verified.field_6235 > 0;
-        if (landed) {
+        if (tookDamage && this.pendingSwingTick >= 0 && clientTick - this.pendingSwingTick <= HIT_CREDIT_TICKS) {
             this.lastLandedTick = clientTick;
             this.consecutiveMisses = 0;
-            if (this.pendingVerifyWasBlocking && this.pendingVerifyWithAxe) {
+            if (this.pendingSwingIntoBlock && this.pendingSwingWithAxe) {
                 this.shieldDisabledUntilMs = System.currentTimeMillis() + SHIELD_DISABLE_MS;
             }
-        } else {
+            this.pendingSwingTick = -1;
+            return;
+        }
+
+        if (this.pendingSwingTick >= 0 && clientTick - this.pendingSwingTick > HIT_CREDIT_TICKS) {
+            this.pendingSwingTick = -1;
             this.consecutiveMisses++;
-            if (this.consecutiveMisses >= MISS_BACKOFF_COUNT) {
+            if (this.consecutiveMisses >= (int) this.missBackoffCount.getValue()) {
                 this.backoffUntilMs = System.currentTimeMillis() + MISS_BACKOFF_MS;
                 this.consecutiveMisses = 0;
             }
@@ -454,10 +494,9 @@ public class TriggerBot extends Module {
                     this.lastAttackServerTick = serverTick;
                 }
 
-                this.pendingVerifyTarget = target;
-                this.pendingVerifyTick = clientTick + 1;
-                this.pendingVerifyWasBlocking = wasBlocking;
-                this.pendingVerifyWithAxe = withAxe;
+                this.pendingSwingTick = clientTick;
+                this.pendingSwingIntoBlock = wasBlocking;
+                this.pendingSwingWithAxe = withAxe;
                 this.critWaitTicks = 0;
 
                 this.generateRandomDelay();
@@ -515,7 +554,8 @@ public class TriggerBot extends Module {
         this.missLockUntilMs = 0L;
         this.backoffUntilMs = 0L;
         this.shieldDisabledUntilMs = 0L;
-        this.pendingVerifyTarget = null;
+        this.pendingSwingTick = -1;
+        this.trackedTargetId = null;
         this.consecutiveMisses = 0;
         this.lastLandedTick = -10000;
     }
