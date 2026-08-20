@@ -284,37 +284,30 @@ public class AutoAnchor extends Module {
     private record ShieldPlacement(class_2338 against, class_2350 face) {}
 
     /**
-     * The shield goes behind the anchor - the far side from the player - never
-     * in front of it. A block placed between us and the anchor walls off the
-     * very block the detonate step still has to interact with, and boxes us in
-     * against our own blast. Behind, it backs the anchor without covering it.
+     * The shield goes between us and the anchor. Explosion damage scales with
+     * how many rays from the blast reach our hitbox unobstructed, so a block on
+     * our side of the anchor is the one that actually absorbs the hit. It does
+     * not stop the detonation: safeKeyDetonate sends its interaction at the
+     * anchor directly rather than relying on a client raycast through it.
      *
      * Tried in order:
-     *   1. Directly behind the anchor, at anchor level.
-     *   2. Behind and one block up, for chest-height cover.
-     *   3. Either side perpendicular to the player axis.
+     *   1. Between us and the anchor, at anchor level.
+     *   2. The same column one block up, for chest-height cover.
      *
-     * Two positions are never used: the block in front, and the block directly
-     * above the anchor, which would cap the top face the detonate interaction
-     * targets. Candidates that aren't replaceable or that clip the player are
-     * skipped.
+     * Nothing else is attempted. A block beside or above the anchor sits off
+     * the line between us and the blast, so it shields nothing and only burns
+     * a glowstone - placing none is better than placing a useless one.
      */
     private ShieldPlacement pickShieldPlacement(class_2338 anchorPos) {
         class_2350 toPlayer = this.horizontalDirectionToPlayer(anchorPos);
-        class_2350 away = toPlayer.method_10153();
-        class_2338 behind = anchorPos.method_10093(away);
         class_2338 front = anchorPos.method_10093(toPlayer);
-        class_2350 sideA = away.method_10170();
 
         class_2338[] candidates = new class_2338[]{
-                behind,
-                behind.method_10084(),
-                anchorPos.method_10093(sideA),
-                anchorPos.method_10093(sideA.method_10153())
+                front,
+                front.method_10084()
         };
 
         for (class_2338 candidate : candidates) {
-            if (candidate.equals(front) || candidate.equals(anchorPos.method_10084())) continue;
             if (!this.mc.field_1687.method_8320(candidate).method_45474()) continue;
             if (this.intersectsPlayer(candidate)) continue;
 
