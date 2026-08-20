@@ -268,30 +268,20 @@ public class AutoAnchor extends Module {
             return;
         }
 
-        class_2338 shieldPos = this.pickShieldPos(this.safeKeyAnchorPos);
-        if (shieldPos == null) {
+        ShieldPlacement placement = this.pickShieldPlacement(this.safeKeyAnchorPos);
+        if (placement == null) {
             this.safeKeyState = SafeKeyState.DETONATE;
             return;
         }
 
-        class_2338 placeAgainst = this.safeKeyAdjacentSolid(shieldPos);
-        if (placeAgainst == null) {
-            this.safeKeyState = SafeKeyState.DETONATE;
-            return;
-        }
-        class_2350 face = class_2350.method_10147(
-                shieldPos.method_10263() - placeAgainst.method_10263(),
-                shieldPos.method_10264() - placeAgainst.method_10264(),
-                shieldPos.method_10260() - placeAgainst.method_10260()
-        );
-        if (face == null) {
-            this.safeKeyState = SafeKeyState.DETONATE;
-            return;
-        }
         this.mc.field_1724.method_31548().method_61496(shieldSlot);
-        this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808, this.hitAt(placeAgainst, face));
+        this.mc.field_1761.method_2896(this.mc.field_1724, class_1268.field_5808,
+                this.hitAt(placement.against(), placement.face()));
         this.safeKeyState = SafeKeyState.DETONATE;
     }
+
+    /** A shield spot resolved together with the block and face used to reach it. */
+    private record ShieldPlacement(class_2338 against, class_2350 face) {}
 
     /**
      * The shield goes behind the anchor - the far side from the player - never
@@ -309,7 +299,7 @@ public class AutoAnchor extends Module {
      * targets. Candidates that aren't replaceable or that clip the player are
      * skipped.
      */
-    private class_2338 pickShieldPos(class_2338 anchorPos) {
+    private ShieldPlacement pickShieldPlacement(class_2338 anchorPos) {
         class_2350 toPlayer = this.horizontalDirectionToPlayer(anchorPos);
         class_2350 away = toPlayer.method_10153();
         class_2338 behind = anchorPos.method_10093(away);
@@ -322,11 +312,26 @@ public class AutoAnchor extends Module {
                 anchorPos.method_10093(sideA),
                 anchorPos.method_10093(sideA.method_10153())
         };
+
         for (class_2338 candidate : candidates) {
             if (candidate.equals(front) || candidate.equals(anchorPos.method_10084())) continue;
             if (!this.mc.field_1687.method_8320(candidate).method_45474()) continue;
             if (this.intersectsPlayer(candidate)) continue;
-            return candidate;
+
+            // Resolve the support here rather than after committing to a spot.
+            // A candidate we cannot actually reach is no candidate at all, so
+            // keep walking the list instead of abandoning the shield entirely.
+            class_2338 against = this.safeKeyAdjacentSolid(candidate);
+            if (against == null) continue;
+
+            class_2350 face = class_2350.method_10147(
+                    candidate.method_10263() - against.method_10263(),
+                    candidate.method_10264() - against.method_10264(),
+                    candidate.method_10260() - against.method_10260()
+            );
+            if (face == null) continue;
+
+            return new ShieldPlacement(against, face);
         }
         return null;
     }
