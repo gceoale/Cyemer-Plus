@@ -38,10 +38,21 @@ import net.minecraft.class_239.class_240;
 
 @Environment(EnvType.CLIENT)
 public class TriggerBot extends Module {
-    /** A crit is only worth holding for if the free window outlasts the wait. */
-    private static final int CRIT_WINDOW_MIN_TICKS = 3;
+    /** Vanilla player fall physics, used to project when a crit becomes available. */
+    private static final double GRAVITY = 0.08;
+    private static final double FALL_DRAG = 0.98;
+    /** A descent further out than this is not worth holding a swing for. */
+    private static final int MAX_CRIT_LOOKAHEAD_TICKS = 20;
     /** Drop opponents from the read once they have been out of sight this long. */
     private static final int SWING_STATE_TTL_TICKS = 200;
+    /**
+     * Ceiling on a measured reach. Vanilla tops out at 3.0, so anything past
+     * this came from lag or desync rather than the opponent genuinely reaching
+     * that far, and must not be allowed to define their threat range.
+     */
+    private static final double LEARNED_REACH_MAX = 4.0;
+    /** Per-sweep bleed-off so one long outlier cannot poison the read forever. */
+    private static final double LEARNED_REACH_DECAY = 0.1;
 
     private final BooleanSetting noSweep = new BooleanSetting("No Sweep", true);
     private final BooleanSetting critPrio = new BooleanSetting("Crit Prio", true);
@@ -63,8 +74,8 @@ public class TriggerBot extends Module {
     private final SliderSetting theirReach = new SliderSetting("Their Reach", 3.0, 2.5, 4.5, 2);
     private final SliderSetting reachMargin = new SliderSetting("Reach Margin", 0.15, 0.0, 1.0, 2);
     private final SliderSetting tradeHpLead = new SliderSetting("Trade HP Lead", 4.0, 0.0, 20.0, 1);
-    private final SliderSetting cooldownMargin = new SliderSetting("Their CD Margin (ticks)", 2.0, 0.0, 10.0, 0);
-    private final SliderSetting maxHold = new SliderSetting("Max Hold (ticks)", 30.0, 0.0, 100.0, 0);
+    private final SliderSetting cooldownMargin = new SliderSetting("Their CD Margin (ticks)", 1.0, 0.0, 10.0, 0);
+    private final SliderSetting maxHold = new SliderSetting("Max Hold (ticks)", 12.0, 0.0, 100.0, 0);
     private final BooleanSetting learnReach = new BooleanSetting("Learn Reach", true);
     private final BooleanSetting predictKb = new BooleanSetting("Predict KB", true);
     private final BooleanSetting critInWindow = new BooleanSetting("Crit In Window", true);
@@ -247,12 +258,14 @@ public class TriggerBot extends Module {
                         }
 
                         if (this.critPrio.isEnabled() && this.shouldWaitForCrit()) {
-                            // A crit is only worth waiting on if the free window
-                            // outlasts the wait. Otherwise they load up mid-hold
-                            // and the crit we were saving for becomes a trade.
+                            // Hold for the crit only when it actually arrives
+                            // inside the free window. If the descent is further
+                            // off than the window is long, they load up mid-hold
+                            // and the crit we saved for becomes a trade instead.
+                            boolean critArrivesInTime = freeWindow > this.ticksUntilCrit();
                             boolean windowClosing = selecting
                                 && this.critInWindow.isEnabled()
-                                && freeWindow <= CRIT_WINDOW_MIN_TICKS;
+                                && !critArrivesInTime;
                             if (!windowClosing) {
                                 return;
                             }
@@ -367,13 +380,22 @@ public class TriggerBot extends Module {
             SwingState state = this.swingStates.get(attacker.method_5667());
             if (state != null) {
                 state.lastSwingTick = tick;
-                if (this.learnReach.isEnabled() && attackerDistance > state.observedReach && attackerDistance <= 6.0) {
-                    state.observedReach = attackerDistance;
+                if (this.learnReach.isEnabled() && attackerDistance > state.observedReach) {
+                    state.observedReach = Math.min(attackerDistance, LEARNED_REACH_MAX);
                 }
             }
         }
 
         if ((tick & 63) == 0) {
+            // Bleed the learned reach back down. Without this a single laggy hit
+            // registering at long range would keep us inside their assumed threat
+            // range permanently, and the bot would hold more and more the longer
+            // a fight ran.
+            for (SwingState state : this.swingStates.values()) {
+                if (state.observedReach > 0.0) {
+                    state.observedReach = Math.max(0.0, state.observedReach - LEARNED_REACH_DECAY);
+                }
+            }
             this.swingStates.entrySet().removeIf(e -> tick - e.getValue().lastSeenTick > SWING_STATE_TTL_TICKS);
         }
     }
@@ -451,6 +473,30 @@ public class TriggerBot extends Module {
             return true;
         }
         return false;
+    }
+
+    /**
+     * Ticks until we are falling fast enough to crit, by stepping vanilla fall
+     * physics forward from our current vertical velocity. Zero means the crit
+     * is available now; MAX_VALUE means no descent is coming soon enough to be
+     * worth holding a swing for.
+     */
+    private int ticksUntilCrit() {
+        class_1657 self = this.mc.field_1724;
+        if (self == null) {
+            return Integer.MAX_VALUE;
+        }
+        double vy = self.method_18798().field_1351;
+        if (vy < -0.1) {
+            return 0;
+        }
+        for (int t = 1; t <= MAX_CRIT_LOOKAHEAD_TICKS; t++) {
+            vy = (vy - GRAVITY) * FALL_DRAG;
+            if (vy < -0.1) {
+                return t;
+            }
+        }
+        return Integer.MAX_VALUE;
     }
 
     /** Component of the target's velocity pointing directly away from us. */
