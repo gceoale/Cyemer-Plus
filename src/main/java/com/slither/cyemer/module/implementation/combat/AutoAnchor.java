@@ -294,36 +294,52 @@ public class AutoAnchor extends Module {
     }
 
     /**
-     * Try shield positions in priority order:
-     *   1. Block adjacent to anchor on the cardinal side facing the player,
-     *      at anchor's Y (classic "wall between player and anchor").
-     *   2. Same, one block higher (chest level).
-     *   3. Directly above the anchor (blocks vertical blast).
-     * Skip any candidate that isn't replaceable or that intersects the player.
+     * The shield goes behind the anchor - the far side from the player - never
+     * in front of it. A block placed between us and the anchor walls off the
+     * very block the detonate step still has to interact with, and boxes us in
+     * against our own blast. Behind, it backs the anchor without covering it.
+     *
+     * Tried in order:
+     *   1. Directly behind the anchor, at anchor level.
+     *   2. Behind and one block up, for chest-height cover.
+     *   3. Either side perpendicular to the player axis.
+     *
+     * Two positions are never used: the block in front, and the block directly
+     * above the anchor, which would cap the top face the detonate interaction
+     * targets. Candidates that aren't replaceable or that clip the player are
+     * skipped.
      */
     private class_2338 pickShieldPos(class_2338 anchorPos) {
-        class_243 playerPos = this.mc.field_1724.method_73189();
-        double dx = playerPos.field_1352 - (anchorPos.method_10263() + 0.5);
-        double dz = playerPos.field_1350 - (anchorPos.method_10260() + 0.5);
-        class_2350 toPlayer;
-        if (Math.abs(dx) >= Math.abs(dz)) {
-            toPlayer = dx >= 0 ? class_2350.field_11034 : class_2350.field_11039;
-        } else {
-            toPlayer = dz >= 0 ? class_2350.field_11035 : class_2350.field_11043;
-        }
+        class_2350 toPlayer = this.horizontalDirectionToPlayer(anchorPos);
+        class_2350 away = toPlayer.method_10153();
+        class_2338 behind = anchorPos.method_10093(away);
+        class_2338 front = anchorPos.method_10093(toPlayer);
+        class_2350 sideA = away.method_10170();
 
-        class_2338 sidePos = anchorPos.method_10093(toPlayer);
         class_2338[] candidates = new class_2338[]{
-                sidePos,
-                sidePos.method_10084(),
-                anchorPos.method_10084()
+                behind,
+                behind.method_10084(),
+                anchorPos.method_10093(sideA),
+                anchorPos.method_10093(sideA.method_10153())
         };
         for (class_2338 candidate : candidates) {
+            if (candidate.equals(front) || candidate.equals(anchorPos.method_10084())) continue;
             if (!this.mc.field_1687.method_8320(candidate).method_45474()) continue;
             if (this.intersectsPlayer(candidate)) continue;
             return candidate;
         }
         return null;
+    }
+
+    /** Cardinal direction pointing from the anchor toward the player. */
+    private class_2350 horizontalDirectionToPlayer(class_2338 anchorPos) {
+        class_243 playerPos = this.mc.field_1724.method_73189();
+        double dx = playerPos.field_1352 - (anchorPos.method_10263() + 0.5);
+        double dz = playerPos.field_1350 - (anchorPos.method_10260() + 0.5);
+        if (Math.abs(dx) >= Math.abs(dz)) {
+            return dx >= 0 ? class_2350.field_11034 : class_2350.field_11039;
+        }
+        return dz >= 0 ? class_2350.field_11035 : class_2350.field_11043;
     }
 
     private boolean intersectsPlayer(class_2338 pos) {
@@ -370,6 +386,15 @@ public class AutoAnchor extends Module {
         return new class_3965(hit, face, blockPos, false);
     }
 
+    /**
+     * Finds a solid neighbour to place the shield block against.
+     *
+     * Respawn anchors are skipped even though they are solid: right-clicking
+     * one while holding glowstone charges it instead of placing the block, so
+     * using the anchor as the support silently eats the glowstone and leaves
+     * no shield behind. Floor first, since it is the least likely to be
+     * something with its own use action.
+     */
     private class_2338 safeKeyAdjacentSolid(class_2338 pos) {
         class_2350[] dirs = {
                 class_2350.field_11033, class_2350.field_11036,
@@ -378,7 +403,10 @@ public class AutoAnchor extends Module {
         };
         for (class_2350 dir : dirs) {
             class_2338 adj = pos.method_10093(dir);
-            if (!this.mc.field_1687.method_8320(adj).method_45474()) return adj;
+            class_2680 state = this.mc.field_1687.method_8320(adj);
+            if (state.method_45474()) continue;
+            if (state.method_27852(class_2246.field_23152)) continue;
+            return adj;
         }
         return null;
     }
