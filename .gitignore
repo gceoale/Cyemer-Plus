@@ -7,3 +7,4 @@ out/
 .DS_Store
 run/
 .fabric/
+local.properties

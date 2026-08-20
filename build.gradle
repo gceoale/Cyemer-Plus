@@ -54,3 +54,60 @@ java {
 	sourceCompatibility = JavaVersion.VERSION_21
 	targetCompatibility = JavaVersion.VERSION_21
 }
+
+// Drops the remapped jar straight into a local Minecraft instance after every
+// build. The destination is machine-specific, so it is read from local.properties
+// (gitignored) or the CYEMER_MODS_DIR env var rather than being committed:
+//
+//   cyemerModsDir=/path/to/instances/<instance>/minecraft/mods
+//
+// With neither set, or a path that does not exist, the task logs and skips so a
+// plain `gradlew build` still works anywhere.
+def cyemerLocalProps = new Properties()
+def cyemerLocalPropsFile = rootProject.file('local.properties')
+if (cyemerLocalPropsFile.exists()) {
+	cyemerLocalPropsFile.withInputStream { cyemerLocalProps.load(it) }
+}
+def cyemerModsDir = System.getenv('CYEMER_MODS_DIR') ?: cyemerLocalProps.getProperty('cyemerModsDir')
+
+tasks.register('installMod') {
+	description = 'Copies the remapped jar into the local Minecraft mods folder.'
+	group = 'build'
+	dependsOn tasks.named('remapJar')
+
+	doLast {
+		if (!cyemerModsDir?.trim()) {
+			logger.lifecycle('installMod: cyemerModsDir not set in local.properties, skipping.')
+			return
+		}
+
+		def destDir = file(cyemerModsDir)
+		if (!destDir.isDirectory()) {
+			logger.lifecycle("installMod: ${destDir} does not exist, skipping.")
+			return
+		}
+
+		def jar = tasks.named('remapJar').get().archiveFile.get().asFile
+
+		// Fabric refuses to launch with two jars declaring the same mod id, so
+		// flag any other cyemer jar sitting in the same folder under a different
+		// name instead of quietly creating that conflict.
+		destDir.listFiles()?.each { existing ->
+			if (existing.name != jar.name && existing.name ==~ /(?i)^cyemer.*\.jar$/) {
+				logger.warn("installMod: WARNING ${existing.name} is also present - two jars with the same mod id will fail to launch. Remove it.")
+			}
+		}
+
+		def dest = new File(destDir, jar.name)
+		java.nio.file.Files.copy(
+			jar.toPath(),
+			dest.toPath(),
+			java.nio.file.StandardCopyOption.REPLACE_EXISTING
+		)
+		logger.lifecycle("installMod: ${jar.name} -> ${destDir} (restart Minecraft to load it)")
+	}
+}
+
+tasks.named('build') {
+	finalizedBy tasks.named('installMod')
+}
