@@ -10,6 +10,8 @@ import com.slither.cyemer.module.Category;
 import com.slither.cyemer.module.Module;
 import com.slither.cyemer.module.SliderSetting;
 import com.slither.cyemer.util.AttackValidator;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
 import net.fabricmc.api.EnvType;
@@ -23,9 +25,11 @@ import net.minecraft.class_1792;
 import net.minecraft.class_1799;
 import net.minecraft.class_1835;
 import net.minecraft.class_1934;
+import net.minecraft.class_1268;
 import net.minecraft.class_2246;
 import net.minecraft.class_238;
 import net.minecraft.class_243;
+import net.minecraft.class_3489;
 import net.minecraft.class_3532;
 import net.minecraft.class_3966;
 import net.minecraft.class_9334;
@@ -34,6 +38,12 @@ import net.minecraft.class_239.class_240;
 
 @Environment(EnvType.CLIENT)
 public class TriggerBot extends Module {
+    /** A crit is only worth holding for if the free window outlasts the wait. */
+    private static final int CRIT_WINDOW_MIN_TICKS = 3;
+    /** Drop opponents from the read once they have been out of sight this long. */
+    private static final int SWING_STATE_TTL_TICKS = 200;
+
+    private final BooleanSetting noSweep = new BooleanSetting("No Sweep", true);
     private final BooleanSetting critPrio = new BooleanSetting("Crit Prio", true);
     private final BooleanSetting onlyOnLmb = new BooleanSetting("Only on LMB", false);
     private final BooleanSetting ignoreShields = new BooleanSetting("Ignore Shields", false);
@@ -55,6 +65,9 @@ public class TriggerBot extends Module {
     private final SliderSetting tradeHpLead = new SliderSetting("Trade HP Lead", 4.0, 0.0, 20.0, 1);
     private final SliderSetting cooldownMargin = new SliderSetting("Their CD Margin (ticks)", 2.0, 0.0, 10.0, 0);
     private final SliderSetting maxHold = new SliderSetting("Max Hold (ticks)", 30.0, 0.0, 100.0, 0);
+    private final BooleanSetting learnReach = new BooleanSetting("Learn Reach", true);
+    private final BooleanSetting predictKb = new BooleanSetting("Predict KB", true);
+    private final BooleanSetting critInWindow = new BooleanSetting("Crit In Window", true);
     private boolean wasInAir = false;
     private boolean hasPassedPeak = false;
     private int ticksAfterPeak = 0;
@@ -67,14 +80,22 @@ public class TriggerBot extends Module {
     private static boolean warnedAttackValidatorFailure = false;
     private class_1309 lockedTarget = null;
     private boolean wasAttackKeyPressed = false;
-    private UUID swingTrackedId = null;
-    private boolean prevSwinging = false;
-    private int prevSwingTicks = 0;
-    private int targetLastSwingTick = -1;
+    private final Map<UUID, SwingState> swingStates = new HashMap<>();
+    private int prevOwnHurtTime = 0;
     private int holdTicks = 0;
+
+    /** Per-opponent combat read, kept across ticks even while we look away. */
+    private static final class SwingState {
+        boolean swinging;
+        int swingTicks;
+        int lastSwingTick = -1;
+        int lastSeenTick = -1;
+        double observedReach = 0.0;
+    }
 
     public TriggerBot() {
         super("TriggerBot", "Automatically attacks when looking at an entity", Category.COMBAT);
+        this.addSetting(this.noSweep);
         this.addSetting(this.critPrio);
         this.addSetting(this.onlyOnLmb);
         this.addSetting(this.ignoreShields);
@@ -96,11 +117,15 @@ public class TriggerBot extends Module {
         this.addSetting(this.tradeHpLead);
         this.addSetting(this.cooldownMargin);
         this.addSetting(this.maxHold);
+        this.addSetting(this.learnReach);
+        this.addSetting(this.predictKb);
+        this.addSetting(this.critInWindow);
     }
 
     @Override
     public void onTick() {
         if (this.mc.field_1724 != null && this.mc.field_1687 != null && this.mc.field_1755 == null) {
+            this.updateCombatTracking();
             ShieldDrainEvent drainEvent = new ShieldDrainEvent();
             EventBus.post(drainEvent);
             if (!drainEvent.isActive()) {
@@ -120,7 +145,6 @@ public class TriggerBot extends Module {
                             return;
                         }
 
-                        this.trackSwing(target);
 
                         if (this.ignoreFriends.isEnabled() && target instanceof class_1657 player && FriendManager.getInstance().isFriend(player.method_5667())
                             )
@@ -215,16 +239,34 @@ public class TriggerBot extends Module {
                             return;
                         }
 
-                        if (this.hitSelect.isEnabled() && !this.isFavorableExchange(target)) {
+                        boolean selecting = this.hitSelect.isEnabled() && target instanceof class_1657;
+                        int freeWindow = selecting ? this.freeWindowTicks((class_1657)target) : Integer.MAX_VALUE;
+
+                        if (selecting && !this.isFavorableExchange((class_1657)target, freeWindow)) {
                             return;
                         }
 
                         if (this.critPrio.isEnabled() && this.shouldWaitForCrit()) {
-                            return;
+                            // A crit is only worth waiting on if the free window
+                            // outlasts the wait. Otherwise they load up mid-hold
+                            // and the crit we were saving for becomes a trade.
+                            boolean windowClosing = selecting
+                                && this.critInWindow.isEnabled()
+                                && freeWindow <= CRIT_WINDOW_MIN_TICKS;
+                            if (!windowClosing) {
+                                return;
+                            }
                         }
 
                         if (this.shouldMissAttack()) {
                             this.missLockUntilMs = currentTime + (long)this.missDelayMs.getValue();
+                            return;
+                        }
+
+                        // Last gate before the swing so nothing above can slip a
+                        // sweep through. Deliberately does not reset crit state:
+                        // holding here is how we wait out into a sprint or crit.
+                        if (this.noSweep.isEnabled() && this.wouldSweep()) {
                             return;
                         }
 
@@ -238,80 +280,171 @@ public class TriggerBot extends Module {
     }
 
     /**
-     * Records the tick the target last started a swing. The server broadcasts
-     * swing animations for tracked entities, so handSwinging/handSwingTicks are
-     * live for remote players. Swinging at air counts too, since vanilla resets
-     * the attack cooldown on a miss as well as on a hit.
+     * Exact vanilla sweep predicate for 1.21.11, mirroring PlayerEntity's
+     * internal sweep check. Sweeping needs a full charge, no sprint knockback,
+     * both feet on the ground, near-stationary movement, and a sword. A crit
+     * cannot coincide with it because crits require being airborne.
+     *
+     * A sweep is the worst hit available: no crit multiplier, no sprint
+     * knockback, and it splashes anything standing next to the target.
      */
-    private void trackSwing(class_1309 target) {
-        if (this.mc.field_1724 == null) {
-            return;
+    private boolean wouldSweep() {
+        class_1657 self = this.mc.field_1724;
+        if (self == null) {
+            return false;
         }
-        UUID id = target.method_5667();
-        if (!id.equals(this.swingTrackedId)) {
-            this.swingTrackedId = id;
-            this.prevSwinging = target.field_6252;
-            this.prevSwingTicks = target.field_6279;
-            this.targetLastSwingTick = -1;
-            this.holdTicks = 0;
-            return;
+        if (!self.method_24828()) {
+            return false;
         }
-
-        boolean swinging = target.field_6252;
-        int swingTicks = target.field_6279;
-        boolean newSwing = swinging && (!this.prevSwinging || swingTicks < this.prevSwingTicks);
-        if (newSwing) {
-            this.targetLastSwingTick = this.mc.field_1724.field_6012;
+        if (self.method_5624()) {
+            return false;
         }
-        this.prevSwinging = swinging;
-        this.prevSwingTicks = swingTicks;
+        if (!(self.method_7261(0.5F) > 0.9F)) {
+            return false;
+        }
+        double horizontalSq = self.method_60478().method_37268();
+        if (horizontalSq >= class_3532.method_33723(self.method_6029() * 2.5)) {
+            return false;
+        }
+        return self.method_5998(class_1268.field_5808).method_31573(class_3489.field_42611);
     }
 
     /**
-     * Hit selection: only swing when the exchange is one we win.
+     * Keeps a per-opponent read of every nearby player, updated every tick
+     * rather than only while one is under the crosshair, so looking away does
+     * not blind the cooldown model.
      *
-     * A hit taken while the opponent can immediately answer it is a trade, and
-     * a trade is a loss whenever a free hit was available instead. So the swing
-     * goes out when they physically cannot punish it - they are blocking or
-     * mid item-use, they are out of their own reach of us, or their attack
-     * cooldown is still spent from their last swing. When both of us are loaded
-     * and in range it is a genuine trade, taken only while our effective health
-     * lead means we win that race.
+     * Two signals feed it. Swing animations are broadcast for tracked entities,
+     * and swinging at air counts because vanilla resets attack cooldown on a
+     * miss too. Damage landing on us is the stronger signal: whoever swung last
+     * within a few ticks definitely just spent their cooldown, and the distance
+     * at that moment is a direct measurement of how far they can actually
+     * reach - worth more than any assumed constant.
      */
-    private boolean isFavorableExchange(class_1309 target) {
-        if (this.mc.field_1724 == null) {
-            return true;
+    private void updateCombatTracking() {
+        class_1657 self = this.mc.field_1724;
+        if (self == null || this.mc.field_1687 == null) {
+            return;
+        }
+        int tick = self.field_6012;
+
+        int ownHurt = self.field_6235;
+        boolean tookDamage = ownHurt > this.prevOwnHurtTime;
+        this.prevOwnHurtTime = ownHurt;
+
+        class_1657 attacker = null;
+        double attackerDistance = Double.MAX_VALUE;
+
+        for (class_1657 player : this.mc.field_1687.method_18456()) {
+            if (player == self || !player.method_5805()) {
+                continue;
+            }
+            if (self.method_5739(player) > 12.0) {
+                continue;
+            }
+
+            SwingState state = this.swingStates.computeIfAbsent(player.method_5667(), k -> new SwingState());
+            state.lastSeenTick = tick;
+
+            boolean swinging = player.field_6252;
+            int swingTicks = player.field_6279;
+            if (swinging && (!state.swinging || swingTicks < state.swingTicks)) {
+                state.lastSwingTick = tick;
+            }
+            state.swinging = swinging;
+            state.swingTicks = swingTicks;
+
+            if (tookDamage && state.lastSwingTick >= 0 && tick - state.lastSwingTick <= 5) {
+                double distance = this.distanceFromEyesToUs(player);
+                if (distance < attackerDistance) {
+                    attackerDistance = distance;
+                    attacker = player;
+                }
+            }
         }
 
+        if (attacker != null) {
+            SwingState state = this.swingStates.get(attacker.method_5667());
+            if (state != null) {
+                state.lastSwingTick = tick;
+                if (this.learnReach.isEnabled() && attackerDistance > state.observedReach && attackerDistance <= 6.0) {
+                    state.observedReach = attackerDistance;
+                }
+            }
+        }
+
+        if ((tick & 63) == 0) {
+            this.swingStates.entrySet().removeIf(e -> tick - e.getValue().lastSeenTick > SWING_STATE_TTL_TICKS);
+        }
+    }
+
+    /**
+     * Ticks remaining before the target could answer a hit right now.
+     * Integer.MAX_VALUE means they simply cannot: committed to an item, or
+     * too far to reach us. Zero means they are loaded and in range, so any
+     * swing is a straight trade.
+     */
+    private int freeWindowTicks(class_1657 target) {
+        class_1657 self = this.mc.field_1724;
+        if (self == null) {
+            return Integer.MAX_VALUE;
+        }
         if (target.method_6039() || target.method_6115()) {
-            this.holdTicks = 0;
-            return true;
+            return Integer.MAX_VALUE;
+        }
+
+        SwingState state = this.swingStates.get(target.method_5667());
+        double cooldownTicks = this.targetCooldownTicks(target);
+        int untilReady = 0;
+        if (state != null && state.lastSwingTick >= 0) {
+            int sinceSwing = self.field_6012 - state.lastSwingTick;
+            untilReady = (int)Math.ceil(cooldownTicks - this.cooldownMargin.getValue()) - sinceSwing;
+            if (untilReady < 0) {
+                untilReady = 0;
+            }
         }
 
         double reach = this.theirReach.getValue() + this.reachMargin.getValue();
-        if (this.targetDistanceToUs(target) > reach) {
+        if (state != null && state.observedReach > 0.0) {
+            reach = Math.max(reach, state.observedReach + this.reachMargin.getValue());
+        }
+
+        double distance = this.distanceFromEyesToUs(target);
+        if (this.predictKb.isEnabled() && untilReady > 0) {
+            // Knockback carries them away during their own recovery, so judge
+            // reach against where they will be when they can actually swing.
+            distance += Math.max(0.0, this.radialSpeedAway(target)) * untilReady * 0.85;
+        }
+
+        return distance > reach ? Integer.MAX_VALUE : untilReady;
+    }
+
+    /**
+     * Hit selection: only swing when the exchange is one we win. A hit the
+     * opponent can immediately answer is a trade, and a trade is a loss
+     * whenever a free hit was available instead.
+     */
+    private boolean isFavorableExchange(class_1657 target, int freeWindow) {
+        class_1657 self = this.mc.field_1724;
+        if (self == null) {
+            return true;
+        }
+
+        if (freeWindow > 0) {
             this.holdTicks = 0;
             return true;
         }
 
-        double cooldownTicks = this.targetCooldownTicks(target);
-        int sinceSwing = this.mc.field_1724.field_6012 - this.targetLastSwingTick;
-        boolean theirCooldownReady = this.targetLastSwingTick < 0
-            || sinceSwing >= cooldownTicks - this.cooldownMargin.getValue();
-        if (!theirCooldownReady) {
-            this.holdTicks = 0;
-            return true;
-        }
-
-        double ourHealth = this.mc.field_1724.method_6032() + this.mc.field_1724.method_6067();
+        double ourHealth = self.method_6032() + self.method_6067();
         double theirHealth = target.method_6032() + target.method_6067();
         if (ourHealth - theirHealth >= this.tradeHpLead.getValue()) {
             this.holdTicks = 0;
             return true;
         }
 
-        // Neither side can be starved forever; without movement control the bot
-        // cannot disengage, so give up the hold rather than stall the fight.
+        // Neither side can be starved forever, and without movement control the
+        // bot cannot disengage the way a player would, so give up the hold
+        // rather than stall the fight outright.
         this.holdTicks++;
         if (this.holdTicks > (int)this.maxHold.getValue()) {
             this.holdTicks = 0;
@@ -320,8 +453,22 @@ public class TriggerBot extends Module {
         return false;
     }
 
+    /** Component of the target's velocity pointing directly away from us. */
+    private double radialSpeedAway(class_1309 target) {
+        class_1657 self = this.mc.field_1724;
+        class_243 delta = new class_243(
+            target.method_23317() - self.method_23317(),
+            target.method_23318() - self.method_23318(),
+            target.method_23321() - self.method_23321()
+        );
+        if (delta.method_1027() < 1.0E-6) {
+            return 0.0;
+        }
+        return target.method_18798().method_1026(delta.method_1029());
+    }
+
     /** Distance from the target's eyes to the nearest point of our hitbox. */
-    private double targetDistanceToUs(class_1309 target) {
+    private double distanceFromEyesToUs(class_1309 target) {
         class_243 theirEye = target.method_33571();
         class_238 ourBox = this.mc.field_1724.method_5829();
         double cx = class_3532.method_15350(theirEye.field_1352, ourBox.field_1323, ourBox.field_1320);
@@ -497,10 +644,8 @@ public class TriggerBot extends Module {
         this.stopMining();
         this.resetCritState();
         this.missLockUntilMs = 0L;
-        this.swingTrackedId = null;
-        this.targetLastSwingTick = -1;
-        this.prevSwinging = false;
-        this.prevSwingTicks = 0;
+        this.swingStates.clear();
+        this.prevOwnHurtTime = 0;
         this.holdTicks = 0;
     }
 }
