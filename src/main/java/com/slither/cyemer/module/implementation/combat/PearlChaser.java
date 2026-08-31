@@ -41,7 +41,14 @@ public class PearlChaser extends Module {
     /** Fallback if the live launch power ever reads as unset. */
     private static final float FALLBACK_POWER = 1.5F;
     private static final int MAX_SIM_TICKS = 300;
-    private static final int SETTLE_TIMEOUT_TICKS = 30;
+    /**
+     * Horizon for solving our own throw. Any arc we would actually take lands
+     * well inside this, and the solver runs many candidate pitches per tick, so
+     * there is no reason to carry the full prediction horizon here.
+     */
+    private static final int AIM_SIM_TICKS = 120;
+    /** Give up on a rotation that will not settle before it becomes a spectacle. */
+    private static final int SETTLE_TIMEOUT_TICKS = 12;
 
     private final SliderSetting range = new SliderSetting("Range", 48.0, 8.0, 96.0, 0);
     private final SliderSetting hpMargin = new SliderSetting("HP Margin", 0.0, 0.0, 20.0, 1);
@@ -53,16 +60,15 @@ public class PearlChaser extends Module {
     private final BooleanSetting ignoreFriends = new BooleanSetting("Ignore Friends", true);
     private final BooleanSetting swapBack = new BooleanSetting("Swap Back", true);
 
-    private enum Phase { IDLE, WAITING, AIMING, THROWING, RECOVER }
+    private enum Phase { IDLE, WAITING, AIMING, ARMED, THROWING, RECOVER }
 
     private Phase phase = Phase.IDLE;
     private final Set<UUID> handled = new HashSet<>();
     private class_243 chaseTarget = null;
+    private class_243 pendingAim = null;
     private long reactAtMs = 0L;
     private int originalSlot = -1;
     private int phaseTicks = 0;
-    private float solvedYaw = 0.0F;
-    private float solvedPitch = 0.0F;
 
     public PearlChaser() {
         super("PearlChaser", "Throws a pearl to land where an enemy's escape pearl will.", Category.COMBAT);
@@ -131,17 +137,42 @@ public class PearlChaser extends Module {
                 }
             }
             case AIMING -> {
-                float yawGap = Math.abs(class_3532.method_15393(RotationManager.getFinalYaw() - this.solvedYaw));
-                float pitchGap = Math.abs(RotationManager.getFinalPitch() - this.solvedPitch);
-                double tol = this.aimTolerance.getValue();
-                if (yawGap <= tol && pitchGap <= tol) {
-                    this.phase = Phase.THROWING;
+                // Another module can outrank us for the camera at any moment. If
+                // that happens we are no longer steering, so waiting on the
+                // rotation would just stall until timeout while it swings
+                // somewhere unrelated.
+                if (!RotationManager.isControlledBy(this)) {
+                    this.abort();
+                    return;
+                }
+                // Re-solve against where we are standing now. The landing spot is
+                // fixed in the world, but the angle that reaches it changes as we
+                // move, so a snapshot taken at launch goes stale and the settle
+                // check can never be satisfied.
+                this.pendingAim = this.solveAimPoint(this.chaseTarget);
+                if (this.pendingAim == null) {
+                    this.abort();
+                    return;
+                }
+                if (RotationManager.isRotationComplete((float) this.aimTolerance.getValue())) {
+                    int pearlSlot = this.findPearlSlot();
+                    if (pearlSlot == -1) {
+                        this.abort();
+                        return;
+                    }
+                    this.originalSlot = this.mc.field_1724.method_31548().method_67532();
+                    this.mc.field_1724.method_31548().method_61496(pearlSlot);
+                    this.phase = Phase.ARMED;
                     this.phaseTicks = 0;
                 } else if (this.phaseTicks > SETTLE_TIMEOUT_TICKS) {
-                    // Rotation never converged - drop it rather than hurl a pearl
-                    // somewhere arbitrary.
                     this.abort();
                 }
+            }
+            case ARMED -> {
+                // Held for a tick so the slot change reaches the server before the
+                // use, otherwise it throws whatever was in hand before.
+                this.phase = Phase.THROWING;
+                this.phaseTicks = 0;
             }
             case THROWING -> {
                 if (this.mc.field_1724.method_6047().method_7909() != class_1802.field_8634) {
@@ -165,27 +196,22 @@ public class PearlChaser extends Module {
     }
 
     private boolean beginAim() {
-        int pearlSlot = this.findPearlSlot();
-        if (pearlSlot == -1 || this.chaseTarget == null) {
+        if (this.chaseTarget == null || this.findPearlSlot() == -1) {
             return false;
         }
 
-        class_243 aimPoint = this.solveAimPoint(this.chaseTarget);
-        if (aimPoint == null) {
+        this.pendingAim = this.solveAimPoint(this.chaseTarget);
+        if (this.pendingAim == null) {
             return false;
         }
 
-        float[] rot = RotationManager.calculateRotationsToPos(aimPoint, RotationManager.getFinalYaw());
-        this.solvedYaw = rot[0];
-        this.solvedPitch = rot[1];
-
-        this.originalSlot = this.mc.field_1724.method_31548().method_67532();
-        this.mc.field_1724.method_31548().method_61496(pearlSlot);
-
+        // Supplier reads the cached point rather than re-solving. RotationManager
+        // samples per frame and a solve walks a few hundred simulated arcs, which
+        // is far too much to repeat at frame rate; the tick loop refreshes it.
         RotationManager.setRotationSupplier(
                 this,
                 RotationManager.Priority.HIGH,
-                () -> aimPoint,
+                () -> this.pendingAim,
                 this.aimSpeed.getValue(),
                 RotationManager.RotationMode.LINEAR,
                 0.0,
@@ -208,6 +234,7 @@ public class PearlChaser extends Module {
         RotationManager.stop(this);
         this.originalSlot = -1;
         this.chaseTarget = null;
+        this.pendingAim = null;
         this.phase = Phase.IDLE;
         this.phaseTicks = 0;
     }
@@ -370,7 +397,7 @@ public class PearlChaser extends Module {
     private float findApexPitch(float power, double horizontal) {
         float lo = -89.0F;
         float hi = 89.0F;
-        for (int i = 0; i < 60; i++) {
+        for (int i = 0; i < 30; i++) {
             float m1 = lo + (hi - lo) / 3.0F;
             float m2 = hi - (hi - lo) / 3.0F;
             if (this.simulateThrow(power, m1, horizontal) < this.simulateThrow(power, m2, horizontal)) {
@@ -430,7 +457,7 @@ public class PearlChaser extends Module {
         double x = 0.0;
         double y = 0.0;
 
-        for (int t = 0; t < MAX_SIM_TICKS; t++) {
+        for (int t = 0; t < AIM_SIM_TICKS; t++) {
             double prevX = x;
             double prevY = y;
             x += vx;

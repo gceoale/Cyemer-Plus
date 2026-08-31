@@ -410,6 +410,16 @@ public class RotationManager {
         return isActive ? finalPitch : (mc.field_1724 != null ? mc.field_1724.method_36455() : 0.0F);
     }
 
+    /**
+     * Whether {@code owner} still holds rotation control. A higher-priority
+     * module can take the supplier over at any time, and a caller that keeps
+     * waiting on a rotation it no longer drives will sit there until it times
+     * out while the camera is steered somewhere else entirely.
+     */
+    public static boolean isControlledBy(Object owner) {
+        return isActive && !isReleasing && currentOwner == owner;
+    }
+
     public static boolean isRotationComplete(float threshold) {
         if (isActive && targetSupplier != null && !isReleasing) {
             class_243 targetPos = targetSupplier.get();
