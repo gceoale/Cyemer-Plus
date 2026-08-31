@@ -339,19 +339,53 @@ public class PearlChaser extends Module {
     }
 
     /**
-     * Bisects the low, fast arc first since it reaches the landing spot sooner and
-     * gives the target less time to move on. Falls back to the lofted arc when the
-     * flat one cannot cover the distance. Null when neither lands within Max Error.
+     * Two pitches reach any given point: a flat fast one and a lofted slow one.
+     * We always want the flat one - it spends the least time in the air, which is
+     * the whole point when chasing someone who is already gone.
+     *
+     * Height-at-distance is unimodal in pitch, peaking at the max-range angle, so
+     * each side of that peak is monotonic and safe to bisect. In Minecraft's pitch
+     * convention negative is upward, which puts the flat solutions above the apex
+     * angle and the lofted ones below it. Only if no flat arc can cover the
+     * distance do we fall back to lofting it. Null when neither lands within
+     * Max Error - past roughly 55 blocks a pearl cannot reach at all.
      */
     private Float solvePitch(float power, double horizontal, double dy) {
-        Float low = this.bisect(power, horizontal, dy, -89.0F, 45.0F, true);
-        if (low != null) {
-            return low;
+        float apex = this.findApexPitch(power, horizontal);
+        Float flat = this.bisect(power, horizontal, dy, apex, 89.0F, false);
+        if (flat != null) {
+            return flat;
         }
-        return this.bisect(power, horizontal, dy, 45.0F, 89.0F, false);
+        return this.bisect(power, horizontal, dy, -89.0F, apex, true);
     }
 
-    private Float bisect(float power, double horizontal, double dy, float lo, float hi, boolean risingArc) {
+    /**
+     * Ternary-searches the pitch where height-at-distance peaks. The peak drifts
+     * with range - near-vertical up close, shallow far out - so a fixed split
+     * would leave one branch straddling the apex and no longer monotonic, which
+     * is what let the solver settle on near-vertical lobs. Infinities compare
+     * below any real height, so unreachable pitches push the search away on
+     * their own.
+     */
+    private float findApexPitch(float power, double horizontal) {
+        float lo = -89.0F;
+        float hi = 89.0F;
+        for (int i = 0; i < 60; i++) {
+            float m1 = lo + (hi - lo) / 3.0F;
+            float m2 = hi - (hi - lo) / 3.0F;
+            if (this.simulateThrow(power, m1, horizontal) < this.simulateThrow(power, m2, horizontal)) {
+                lo = m1;
+            } else {
+                hi = m2;
+            }
+        }
+        return (lo + hi) / 2.0F;
+    }
+
+    /**
+     * @param increasing whether height-at-distance rises as pitch rises across [lo, hi]
+     */
+    private Float bisect(float power, double horizontal, double dy, float lo, float hi, boolean increasing) {
         float best = (lo + hi) / 2.0F;
         double bestErr = Double.MAX_VALUE;
 
@@ -359,7 +393,9 @@ public class PearlChaser extends Module {
             float mid = (lo + hi) / 2.0F;
             double hitY = this.simulateThrow(power, mid, horizontal);
             if (Double.isInfinite(hitY)) {
-                if (risingArc) {
+                // Never covered the distance. The unreachable end of each branch is
+                // the one furthest from the apex, so step away from it.
+                if (increasing) {
                     lo = mid;
                 } else {
                     hi = mid;
@@ -377,7 +413,7 @@ public class PearlChaser extends Module {
             }
 
             boolean tooLow = err < 0;
-            if (risingArc == tooLow) {
+            if (increasing == tooLow) {
                 lo = mid;
             } else {
                 hi = mid;
