@@ -61,6 +61,7 @@ import com.slither.cyemer.module.implementation.combat.InstaCart;
 import com.slither.cyemer.module.implementation.combat.Lungemacro;
 import com.slither.cyemer.module.implementation.combat.Nick;
 import com.slither.cyemer.module.implementation.combat.PearlCharge;
+import com.slither.cyemer.module.implementation.combat.PearlChaser;
 import com.slither.cyemer.module.implementation.combat.PearlMacro;
 import com.slither.cyemer.module.implementation.combat.Shielddrain;
 import com.slither.cyemer.module.implementation.combat.TriggerBot;
@@ -158,6 +159,7 @@ public class ModuleManager {
         this.modules.add(new StreamProof());
         this.modules.add(new LagReach());
         this.modules.add(new WindChargeHitter());
+        this.modules.add(new PearlChaser());
     }
 
     public void onTick() {
