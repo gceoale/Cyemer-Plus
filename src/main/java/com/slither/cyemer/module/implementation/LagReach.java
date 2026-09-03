@@ -10,6 +10,8 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.minecraft.class_1657;
+import net.minecraft.class_243;
 import net.minecraft.class_2596;
 import net.minecraft.class_2827;
 import net.minecraft.class_332;
@@ -40,7 +42,7 @@ public class LagReach extends Module {
     private static LagReach instance;
 
     private final SliderSetting delay = new SliderSetting("Delay (ms)", 60.0, 20.0, 150.0, 0);
-    private final SliderSetting reachBonus = new SliderSetting("Reach (blocks)", 0.05, 0.0, 0.1, 2);
+    private final SliderSetting maxReach = new SliderSetting("Max Reach", 0.40, 0.0, 0.60, 2);
     private final BooleanSetting combatOnly = new BooleanSetting("Combat Only", true);
     private final SliderSetting combatWindow = new SliderSetting("Combat Window (ms)", 1500.0, 500.0, 5000.0, 0);
     private final BooleanSetting showHud = new BooleanSetting("Show HUD", true);
@@ -53,7 +55,7 @@ public class LagReach extends Module {
     public LagReach() {
         super("LagReach", "Delays pong/keepalive replies and extends client reach so hits land at longer range.", Category.PLAYER);
         this.addSetting(this.delay);
-        this.addSetting(this.reachBonus);
+        this.addSetting(this.maxReach);
         this.addSetting(this.combatOnly);
         this.addSetting(this.combatWindow);
         this.addSetting(this.showHud);
@@ -69,8 +71,65 @@ public class LagReach extends Module {
         this.lastAttackAt = System.currentTimeMillis();
     }
 
+    /**
+     * Extra reach the inflated window actually earns, rather than a flat bonus.
+     *
+     * Holding pongs widens the window the server rewinds an opponent through
+     * when it validates a hit. If they travelled away from us during that
+     * window their rewound position is nearer than where they stand now, so a
+     * swing at that much beyond normal range still resolves inside it. Take
+     * exactly that displacement and nothing more.
+     *
+     * Everything else returns zero. A closing opponent was further away in the
+     * past, not nearer, so rewinding works against us there - granting reach
+     * anyway is what made the flat version flag while buying nothing. And with
+     * no delay actually being applied there is no window to spend.
+     */
     public double getReachBonus() {
-        return this.reachBonus.getValue();
+        if (this.mc.field_1724 == null || this.mc.field_1687 == null) {
+            return 0.0;
+        }
+        if (!this.shouldHold()) {
+            return 0.0;
+        }
+
+        double windowTicks = this.effectiveHoldMs() / 50.0;
+        double cap = this.maxReach.getValue();
+        if (windowTicks <= 0.0 || cap <= 0.0) {
+            return 0.0;
+        }
+
+        class_1657 self = this.mc.field_1724;
+        double searchRange = 3.0 + cap + 1.0;
+        double earned = 0.0;
+
+        for (class_1657 other : this.mc.field_1687.method_18456()) {
+            if (other == self || !other.method_5805()) {
+                continue;
+            }
+            if (self.method_5739(other) > searchRange) {
+                continue;
+            }
+            double away = this.radialSpeedAway(other);
+            if (away > 0.0) {
+                earned = Math.max(earned, away * windowTicks);
+            }
+        }
+        return Math.min(earned, cap);
+    }
+
+    /** Component of the target's velocity pointing straight away from us. */
+    private double radialSpeedAway(class_1657 target) {
+        class_1657 self = this.mc.field_1724;
+        class_243 delta = new class_243(
+                target.method_23317() - self.method_23317(),
+                target.method_23318() - self.method_23318(),
+                target.method_23321() - self.method_23321()
+        );
+        if (delta.method_1027() < 1.0E-6) {
+            return 0.0;
+        }
+        return target.method_18798().method_1026(delta.method_1029());
     }
 
     private long effectiveHoldMs() {
@@ -142,7 +201,7 @@ public class LagReach extends Module {
         if (!this.showHud.isEnabled() || this.mc.field_1724 == null) return;
         long addedPing = this.queue.isEmpty() ? 0L : this.effectiveHoldMs();
         boolean active = this.shouldHold();
-        double reach = 3.0 + this.reachBonus.getValue();
+        double reach = 3.0 + this.getReachBonus();
 
         String line1 = String.format("LagReach %s", active ? "ACTIVE" : "idle");
         String line2 = String.format("+%d ms  |  %.2f blocks", addedPing, reach);
