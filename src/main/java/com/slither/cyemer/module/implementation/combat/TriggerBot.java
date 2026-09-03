@@ -18,6 +18,7 @@ import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.class_1297;
 import net.minecraft.class_1309;
+import net.minecraft.class_1511;
 import net.minecraft.class_1642;
 import net.minecraft.class_1657;
 import net.minecraft.class_1743;
@@ -54,6 +55,8 @@ public class TriggerBot extends Module {
     /** Per-sweep bleed-off so one long outlier cannot poison the read forever. */
     private static final double LEARNED_REACH_DECAY = 0.1;
 
+    private final BooleanSetting hitCrystals = new BooleanSetting("Hit Crystals", true);
+    private final SliderSetting crystalCooldown = new SliderSetting("Crystal Cooldown %", 0.0, 0.0, 100.0, 0);
     private final BooleanSetting noSweep = new BooleanSetting("No Sweep", true);
     private final BooleanSetting critPrio = new BooleanSetting("Crit Prio", true);
     private final BooleanSetting onlyOnLmb = new BooleanSetting("Only on LMB", false);
@@ -106,6 +109,8 @@ public class TriggerBot extends Module {
 
     public TriggerBot() {
         super("TriggerBot", "Automatically attacks when looking at an entity", Category.COMBAT);
+        this.addSetting(this.hitCrystals);
+        this.addSetting(this.crystalCooldown);
         this.addSetting(this.noSweep);
         this.addSetting(this.critPrio);
         this.addSetting(this.onlyOnLmb);
@@ -149,6 +154,12 @@ public class TriggerBot extends Module {
                     boolean isAttackKeyPressed = this.mc.field_1690.field_1886.method_1434();
                     boolean manualAttack = isAttackKeyPressed && !this.wasAttackKeyPressed;
                     this.wasAttackKeyPressed = isAttackKeyPressed;
+                    if (this.hitCrystals.isEnabled()
+                            && this.mc.field_1765 instanceof class_3966 crystalHit
+                            && crystalHit.method_17782() instanceof class_1511 crystal) {
+                        this.handleCrystal(crystal);
+                        return;
+                    }
                     if (this.mc.field_1765 instanceof class_3966 entityHit
                             && entityHit.method_17782() instanceof class_1309 target) {
                         if (!target.method_5805() || target.method_6032() <= 0.0F) {
@@ -614,6 +625,63 @@ public class TriggerBot extends Module {
     private boolean isInWeb() {
         return this.mc.field_1687.method_8320(this.mc.field_1724.method_24515()).method_27852(class_2246.field_10343)
             || this.mc.field_1687.method_8320(this.mc.field_1724.method_24515().method_10084()).method_27852(class_2246.field_10343);
+    }
+
+    /**
+     * Crystals are class_1297, not class_1309, so the main path's LivingEntity
+     * filter never matched one and they were silently ignored.
+     *
+     * They also skip most of the combat gating, because none of it describes a
+     * crystal. There is no attack cooldown worth waiting on - a crystal
+     * detonates from any hit, so holding for full charge only slows the break.
+     * Crits need a LivingEntity and can never apply. Hit selection reads an
+     * opponent's swing timing, which a crystal does not have, and hurt time
+     * likewise. The sweep rule is skipped for the same reason it exists: a
+     * sweep-marked hit is refused because it carries neither sprint knockback
+     * nor a crit multiplier, and against something that dies to any hit at all
+     * there is nothing to lose. What still applies is the user's own scope -
+     * weapon, slot and mouse-button restrictions, and the miss simulation.
+     */
+    private void handleCrystal(class_1511 crystal) {
+        if (!crystal.method_5805()) {
+            return;
+        }
+        if (this.onlyWeapons.isEnabled() && !this.isHoldingWeapon()) {
+            return;
+        }
+        if (this.slotRestriction.isEnabled()) {
+            int selectedSlot = this.mc.field_1724.method_31548().method_67532() + 1;
+            if (selectedSlot != this.restrictedSlot.getValue()) {
+                return;
+            }
+        }
+        if (this.onlyOnLmb.isEnabled() && !this.mc.field_1690.field_1886.method_1434()) {
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        if (now < this.missLockUntilMs) {
+            return;
+        }
+        if (this.randomization.isEnabled() && now < this.nextAttackTime) {
+            return;
+        }
+        if (this.mc.field_1724.method_7261(0.5F) < this.crystalCooldown.getValue() / 100.0) {
+            return;
+        }
+
+        TriggerBotReadyEvent event = new TriggerBotReadyEvent();
+        EventBus.post(event);
+        if (event.isCancelled()) {
+            return;
+        }
+
+        if (this.shouldMissAttack()) {
+            this.missLockUntilMs = now + (long) this.missDelayMs.getValue();
+            return;
+        }
+
+        this.executeAttack();
     }
 
     private boolean executeAttack() {
