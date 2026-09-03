@@ -73,7 +73,7 @@ public class TriggerBot extends Module {
     private final BooleanSetting hitSelect = new BooleanSetting("Hit Select", true);
     private final SliderSetting theirReach = new SliderSetting("Their Reach", 3.0, 2.5, 4.5, 2);
     private final SliderSetting reachMargin = new SliderSetting("Reach Margin", 0.15, 0.0, 1.0, 2);
-    private final SliderSetting tradeHpLead = new SliderSetting("Trade HP Lead", 4.0, 0.0, 20.0, 1);
+    private final SliderSetting tradeHpLead = new SliderSetting("Trade HP Lead", 0.0, 0.0, 20.0, 1);
     private final SliderSetting cooldownMargin = new SliderSetting("Their CD Margin (ticks)", 1.0, 0.0, 10.0, 0);
     private final SliderSetting maxHold = new SliderSetting("Max Hold (ticks)", 12.0, 0.0, 100.0, 0);
     private final BooleanSetting learnReach = new BooleanSetting("Learn Reach", true);
