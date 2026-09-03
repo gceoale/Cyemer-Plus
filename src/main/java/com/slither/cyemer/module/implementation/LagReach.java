@@ -13,7 +13,6 @@ import net.fabricmc.api.Environment;
 import net.minecraft.class_1657;
 import net.minecraft.class_243;
 import net.minecraft.class_2596;
-import net.minecraft.class_2827;
 import net.minecraft.class_332;
 import net.minecraft.class_6374;
 import net.minecraft.class_9779;
@@ -21,8 +20,10 @@ import net.minecraft.class_9779;
 /**
  * Extra reach via inflated ping.
  *
- * Holds outgoing pong (class_6374) and keepalive (class_2827) replies
- * for `Delay` ms. Server measures ping off round-trip; Grim's reach
+ * Holds outgoing pong (class_6374) replies for `Delay` ms. Keepalives are
+ * deliberately left alone: they run about 15s apart and feed the tab-list
+ * ping display, not the transaction window a reach check rewinds through,
+ * so delaying them buys no leniency and only adds another timing anomaly. Server measures ping off round-trip; Grim's reach
  * check rewinds targets by ping so late replies widen the rewind
  * window and moving targets can be hit from further. Position stream
  * is untouched so Simulation / Timer / PacketOrder don't flag.
@@ -43,6 +44,7 @@ public class LagReach extends Module {
 
     private final SliderSetting delay = new SliderSetting("Delay (ms)", 60.0, 20.0, 150.0, 0);
     private final SliderSetting maxReach = new SliderSetting("Max Reach", 0.40, 0.0, 0.60, 2);
+    private final SliderSetting windowSafety = new SliderSetting("Window Safety", 0.70, 0.1, 1.0, 2);
     private final BooleanSetting combatOnly = new BooleanSetting("Combat Only", true);
     private final SliderSetting combatWindow = new SliderSetting("Combat Window (ms)", 1500.0, 500.0, 5000.0, 0);
     private final BooleanSetting showHud = new BooleanSetting("Show HUD", true);
@@ -56,6 +58,7 @@ public class LagReach extends Module {
         super("LagReach", "Delays pong/keepalive replies and extends client reach so hits land at longer range.", Category.PLAYER);
         this.addSetting(this.delay);
         this.addSetting(this.maxReach);
+        this.addSetting(this.windowSafety);
         this.addSetting(this.combatOnly);
         this.addSetting(this.combatWindow);
         this.addSetting(this.showHud);
@@ -93,7 +96,12 @@ public class LagReach extends Module {
             return 0.0;
         }
 
-        double windowTicks = this.effectiveHoldMs() / 50.0;
+        // Claim a fraction of the window rather than all of it. Our estimate of
+        // how far the server rewinds is built from client-side velocity and our
+        // own hold time, neither of which is exactly what the server used, and
+        // overshooting its real uncertainty is precisely what trips a reach
+        // check. Sitting inside the edge costs a little range and removes that.
+        double windowTicks = (this.effectiveHoldMs() / 50.0) * this.windowSafety.getValue();
         double cap = this.maxReach.getValue();
         if (windowTicks <= 0.0 || cap <= 0.0) {
             return 0.0;
@@ -175,7 +183,7 @@ public class LagReach extends Module {
             return false;
         }
         if (!this.shouldHold()) return false;
-        if (packet instanceof class_6374 || packet instanceof class_2827) {
+        if (packet instanceof class_6374) {
             this.queue.addLast(new Queued(packet, System.currentTimeMillis()));
             return true;
         }
