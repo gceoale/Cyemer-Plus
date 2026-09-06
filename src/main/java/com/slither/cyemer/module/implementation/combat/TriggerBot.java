@@ -55,7 +55,7 @@ public class TriggerBot extends Module {
     /** Per-sweep bleed-off so one long outlier cannot poison the read forever. */
     private static final double LEARNED_REACH_DECAY = 0.1;
 
-    private final BooleanSetting hitCrystals = new BooleanSetting("Hit Crystals", true);
+    private final BooleanSetting hitCrystals = new BooleanSetting("Hit Crystals", false);
     private final SliderSetting crystalCooldown = new SliderSetting("Crystal Cooldown %", 0.0, 0.0, 100.0, 0);
     private final BooleanSetting noSweep = new BooleanSetting("No Sweep", true);
     private final BooleanSetting critPrio = new BooleanSetting("Crit Prio", true);
