@@ -9,16 +9,32 @@ import com.slither.cyemer.util.RotationManager;
 import com.slither.cyemer.util.render.RenderUtils;
 import java.awt.Color;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.UUID;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.minecraft.class_1297;
+import net.minecraft.class_1684;
+import net.minecraft.class_1776;
 import net.minecraft.class_1792;
 import net.minecraft.class_1802;
+import net.minecraft.class_2338;
 import net.minecraft.class_238;
+import net.minecraft.class_239;
 import net.minecraft.class_243;
+import net.minecraft.class_3486;
+import net.minecraft.class_3532;
+import net.minecraft.class_3610;
+import net.minecraft.class_3959;
+import net.minecraft.class_3965;
 import net.minecraft.class_4184;
 import net.minecraft.class_4587;
 import net.minecraft.class_4597;
+import net.minecraft.class_640;
+import net.minecraft.class_746;
+import net.minecraft.class_9239;
 import net.minecraft.class_9799;
 import net.minecraft.class_4597.class_4598;
 
@@ -28,23 +44,26 @@ public class PearlCatch extends Module {
     private final ModeSetting rotPattern = new ModeSetting("Pattern", "Sine", "Smooth", "Linear", "Instant");
     private final SliderSetting rotRandom = new SliderSetting("Randomness", 0.0, 0.0, 1.0, 2);
     private final BooleanSetting silentRotation = new BooleanSetting("Silent Aim", true);
-    private final SliderSetting predictionTicks = new SliderSetting("Max Sim Ticks", 30.0, 20.0, 50.0, 0);
     private final BooleanSetting showTrajectory = new BooleanSetting("Show Trajectory", true);
+    // class_1682.method_7490
     private static final double PEARL_GRAVITY = 0.03;
-    private static final double PEARL_DRAG = 0.99;
-    private static final double PEARL_INITIAL_SPEED = 1.5;
-    private static final double WIND_CHARGE_SPEED = 1.5;
-    private static final double WIND_CHARGE_DRAG = 1.0;
-    private static final double WIND_CHARGE_GRAVITY = 0.0;
-    private static final double WIND_CHARGE_ACCELERATION = 0.0;
-    private static final int THROW_DELAY_TICKS = 2;
+    // class_1682.method_63673 multiplies by these floats, keep the float widening so it matches bit for bit
+    private static final double PEARL_DRAG = 0.99F;
+    private static final double PEARL_WATER_DRAG = 0.8F;
+    // class_3857 owner ctor spawns the pearl at eyeY - 0.1F
+    private static final double PEARL_SPAWN_DROP = 0.1F;
+    private static final double PEARL_HALF_WIDTH = 0.125;
+    private static final double PEARL_HEIGHT = 0.25;
+    private static final float FALLBACK_POWER = 1.5F;
+    private static final int MAX_PATH_TICKS = 400;
+    private static final int WIND_SIM_TICKS = 50;
     private PearlCatch.State currentState = PearlCatch.State.IDLE;
     private int originalSlot = -1;
     private int pearlThrowTick = 0;
     private int executionTimer = 0;
-    private class_243 pearlStartPos = class_243.field_1353;
-    private class_243 pearlStartVel = class_243.field_1353;
-    private class_243 playerVelAtThrow = class_243.field_1353;
+    private final Set<UUID> ignoredPearls = new HashSet<>();
+    private UUID trackedPearl = null;
+    private boolean pathLanded = false;
     private List<class_243> predictedPearlPath = new ArrayList<>();
     private class_243 renderIntercept = null;
     private class_243 renderAim = null;
@@ -55,13 +74,12 @@ public class PearlCatch extends Module {
         this.addSetting(this.rotPattern);
         this.addSetting(this.rotRandom);
         this.addSetting(this.silentRotation);
-        this.addSetting(this.predictionTicks);
         this.addSetting(this.showTrajectory);
     }
 
     @Override
     public void onEnable() {
-        if (this.mc.field_1724 == null) {
+        if (this.mc.field_1724 == null || this.mc.field_1687 == null) {
             this.toggle();
         } else if (this.hasItem(class_1802.field_8634) && this.hasItem(class_1802.field_49098)) {
             this.currentState = PearlCatch.State.THROWING_PEARL;
@@ -70,6 +88,15 @@ public class PearlCatch extends Module {
             this.renderIntercept = null;
             this.renderAim = null;
             this.executionTimer = 0;
+            this.trackedPearl = null;
+            this.pathLanded = false;
+            // our pearls already in the air aren't the one we're about to throw
+            this.ignoredPearls.clear();
+            for (class_1297 entity : this.mc.field_1687.method_18112()) {
+                if (entity instanceof class_1684 pearl && pearl.method_24921() == this.mc.field_1724) {
+                    this.ignoredPearls.add(pearl.method_5667());
+                }
+            }
         } else {
             this.toggle();
         }
@@ -89,6 +116,7 @@ public class PearlCatch extends Module {
         this.currentState = PearlCatch.State.IDLE;
         this.renderIntercept = null;
         this.renderAim = null;
+        this.trackedPearl = null;
     }
 
     @Override
@@ -120,14 +148,7 @@ public class PearlCatch extends Module {
         } else {
             this.mc.field_1724.method_31548().method_61496(pearlSlot);
             this.mc.field_1690.field_1904.method_23481(true);
-            this.pearlStartPos = this.mc.field_1724.method_33571();
-            this.playerVelAtThrow = this.mc.field_1724.method_18798();
-            class_243 throwDirection = this.mc.field_1724.method_5828(1.0F);
-            class_243 inheritedVelocity = new class_243(
-                this.playerVelAtThrow.field_1352, this.mc.field_1724.method_24828() ? 0.0 : this.playerVelAtThrow.field_1351, this.playerVelAtThrow.field_1350
-            );
-            this.pearlStartVel = throwDirection.method_1021(1.5).method_1019(inheritedVelocity);
-            this.simulateProjectile(this.pearlStartPos, this.pearlStartVel, 0.99, 0.03, 0.0, this.predictedPearlPath);
+            this.predictThrow();
             if (!this.predictedPearlPath.isEmpty() && this.isInterceptPossible()) {
                 this.currentState = PearlCatch.State.TRACKING;
                 this.pearlThrowTick = this.mc.field_1724.field_6012;
@@ -151,45 +172,68 @@ public class PearlCatch extends Module {
     private void handleTracking() {
         this.mc.field_1690.field_1904.method_23481(false);
         int ticksSinceThrow = this.mc.field_1724.field_6012 - this.pearlThrowTick;
-        if (ticksSinceThrow >= this.predictedPearlPath.size() - 5) {
-            RotationManager.clearTarget(this);
-            this.currentState = PearlCatch.State.RESETTING;
-        } else if (ticksSinceThrow >= 1) {
-            if (ticksSinceThrow > 60) {
-                RotationManager.clearTarget(this);
-                this.currentState = PearlCatch.State.RESETTING;
-            } else {
-                class_243 predictedPos = this.mc.field_1724.method_73189().method_1019(this.mc.field_1724.method_18798());
-                class_243 predictedEyePos = new class_243(
-                    predictedPos.field_1352, predictedPos.field_1351 + this.mc.field_1724.method_5751(), predictedPos.field_1350
-                );
-                class_243 predictedVel = this.mc.field_1724.method_18798();
-                PearlCatch.SolverResult result = this.solveInterceptWithPrediction(ticksSinceThrow, predictedEyePos, predictedVel);
-                if (result != null) {
-                    this.renderIntercept = result.interceptPos;
-                    this.renderAim = result.aimDirection;
-                    RotationManager.setRotationSupplier(this, RotationManager.Priority.HIGHEST, () -> {
-                        int currentTicks = this.mc.field_1724.field_6012 - this.pearlThrowTick;
-                        class_243 nextPos = this.mc.field_1724.method_73189().method_1019(this.mc.field_1724.method_18798());
-                        class_243 nextEyePos = new class_243(nextPos.field_1352, nextPos.field_1351 + this.mc.field_1724.method_5751(), nextPos.field_1350);
-                        class_243 nextVel = this.mc.field_1724.method_18798();
-                        PearlCatch.SolverResult freshResult = this.solveInterceptWithPrediction(currentTicks, nextEyePos, nextVel);
-                        return freshResult != null ? freshResult.aimDirection : result.aimDirection;
-                    }, this.rotationStrength.getValue(), this.getRotationMode(), this.rotRandom.getValue(), this.silentRotation.isEnabled(), false);
-                    if (RotationManager.isRotationComplete(1.5F)) {
-                        int windSlot = this.findItemSlot(class_1802.field_49098);
-                        if (windSlot != -1) {
-                            this.mc.field_1724.method_31548().method_61496(windSlot);
-                            this.currentState = PearlCatch.State.EXECUTING_CATCH;
-                            this.executionTimer = 0;
-                        }
-                    }
-                } else {
-                    this.renderIntercept = null;
-                    RotationManager.clearTarget(this);
+        class_1684 pearl = this.findOurPearl();
+        if (pearl != null) {
+            // the real pearl already has the server's random spread and any knockback baked in,
+            // so once it exists the path is rebuilt from it every tick instead of the throw-time guess
+            this.trackedPearl = pearl.method_5667();
+            this.simulatePearl(pearl.method_73189(), pearl.method_18798(), pearl.method_5799(), pearl);
+        } else if (this.trackedPearl != null) {
+            // it landed or despawned, nothing left to catch
+            this.endTracking();
+            return;
+        }
+
+        if (ticksSinceThrow > 60) {
+            this.endTracking();
+            return;
+        }
+
+        if (this.trackedPearl == null) {
+            // spawn packet isn't here yet, don't aim at a guess
+            return;
+        }
+
+        int lead = this.leadTicks();
+        if (this.predictedPearlPath.size() <= lead + 5) {
+            // lands before a wind charge thrown now could reach it
+            this.endTracking();
+            return;
+        }
+
+        class_243 predictedPos = this.mc.field_1724.method_73189().method_1019(this.mc.field_1724.method_18798());
+        class_243 predictedEyePos = new class_243(
+            predictedPos.field_1352, predictedPos.field_1351 + this.mc.field_1724.method_5751(), predictedPos.field_1350
+        );
+        class_243 predictedVel = this.mc.field_1724.method_18798();
+        PearlCatch.SolverResult result = this.solveInterceptWithPrediction(lead, predictedEyePos, predictedVel);
+        if (result != null) {
+            this.renderIntercept = result.interceptPos;
+            this.renderAim = result.aimDirection;
+            RotationManager.setRotationSupplier(this, RotationManager.Priority.HIGHEST, () -> {
+                class_243 nextPos = this.mc.field_1724.method_73189().method_1019(this.mc.field_1724.method_18798());
+                class_243 nextEyePos = new class_243(nextPos.field_1352, nextPos.field_1351 + this.mc.field_1724.method_5751(), nextPos.field_1350);
+                class_243 nextVel = this.mc.field_1724.method_18798();
+                PearlCatch.SolverResult freshResult = this.solveInterceptWithPrediction(this.leadTicks(), nextEyePos, nextVel);
+                return freshResult != null ? freshResult.aimDirection : result.aimDirection;
+            }, this.rotationStrength.getValue(), this.getRotationMode(), this.rotRandom.getValue(), this.silentRotation.isEnabled(), false);
+            if (RotationManager.isRotationComplete(1.5F)) {
+                int windSlot = this.findItemSlot(class_1802.field_49098);
+                if (windSlot != -1) {
+                    this.mc.field_1724.method_31548().method_61496(windSlot);
+                    this.currentState = PearlCatch.State.EXECUTING_CATCH;
+                    this.executionTimer = 0;
                 }
             }
+        } else {
+            this.renderIntercept = null;
+            RotationManager.clearTarget(this);
         }
+    }
+
+    private void endTracking() {
+        RotationManager.clearTarget(this);
+        this.currentState = PearlCatch.State.RESETTING;
     }
 
     private void handleExecution() {
@@ -227,25 +271,153 @@ public class PearlCatch extends Module {
         }
     }
 
-    private void simulateProjectile(class_243 startPos, class_243 startVel, double drag, double gravity, double acceleration, List<class_243> output) {
-        output.clear();
-        class_243 pos = startPos;
-        class_243 vel = startVel;
-        int maxTicks = (int)this.predictionTicks.getPreciseValue();
+    /**
+     * The pearl we're about to throw, built the way the server builds it: class_3857 spawns it at
+     * eyeY - 0.1F, class_1676.method_24919 aims it from yaw/pitch through the MathHelper tables and
+     * adds our last tick of movement (no vertical part on the ground). The server also adds a small
+     * random spread nobody can know ahead of time, so this only stands in until the real pearl shows up.
+     */
+    private void predictThrow() {
+        class_746 player = this.mc.field_1724;
+        float yaw = class_3532.method_15393(player.method_36454());
+        float pitch = player.method_36455();
+        float dx = -class_3532.method_15374(yaw * 0.017453292F) * class_3532.method_15362(pitch * 0.017453292F);
+        float dy = -class_3532.method_15374(pitch * 0.017453292F);
+        float dz = class_3532.method_15362(yaw * 0.017453292F) * class_3532.method_15362(pitch * 0.017453292F);
+        class_243 velocity = new class_243(dx, dy, dz).method_1029().method_1021(this.power(class_1776.field_55033));
+        velocity = velocity.method_1031(
+            player.method_23317() - player.field_6014,
+            player.method_24828() ? 0.0 : player.method_23318() - player.field_6036,
+            player.method_23321() - player.field_5969
+        );
+        class_243 start = new class_243(player.method_23317(), player.method_23320() - PEARL_SPAWN_DROP, player.method_23321());
+        this.simulatePearl(start, velocity, false, player);
+    }
 
-        for (int i = 0; i < maxTicks; i++) {
-            output.add(pos);
-            vel = vel.method_1023(0.0, gravity, 0.0);
-            if (acceleration != 0.0) {
-                vel = vel.method_1019(vel.method_1029().method_1021(acceleration));
+    /**
+     * class_1682.method_5773 one tick at a time: gravity, then drag (0.8F in water, 0.99F in air,
+     * from the water state at the end of the previous tick), then a COLLIDER raycast from where the
+     * pearl is to where it's going. A block in the way ends the flight on the hit point, which is
+     * exactly where the pearl lands you.
+     */
+    private void simulatePearl(class_243 start, class_243 velocity, boolean inWater, class_1297 shapeContext) {
+        this.predictedPearlPath.clear();
+        this.pathLanded = false;
+        this.predictedPearlPath.add(start);
+        double x = start.field_1352;
+        double y = start.field_1351;
+        double z = start.field_1350;
+        double vx = velocity.field_1352;
+        double vy = velocity.field_1351;
+        double vz = velocity.field_1350;
+        boolean water = inWater;
+        int floor = this.mc.field_1687.method_31607() - 64;
+
+        for (int t = 0; t < MAX_PATH_TICKS; t++) {
+            vy -= PEARL_GRAVITY;
+            double drag = water ? PEARL_WATER_DRAG : PEARL_DRAG;
+            vx *= drag;
+            vy *= drag;
+            vz *= drag;
+            class_243 from = new class_243(x, y, z);
+            class_243 to = new class_243(x + vx, y + vy, z + vz);
+            class_3965 hit = this.mc
+                .field_1687
+                .method_17742(new class_3959(from, to, class_3959.class_3960.field_17558, class_3959.class_242.field_1348, shapeContext));
+            if (hit.method_17783() != class_239.class_240.field_1333) {
+                this.predictedPearlPath.add(hit.method_17784());
+                this.pathLanded = true;
+                return;
             }
 
-            vel = vel.method_1021(drag);
-            pos = pos.method_1019(vel);
-            if (pos.field_1351 < -64.0) {
-                break;
+            x = to.field_1352;
+            y = to.field_1351;
+            z = to.field_1350;
+            this.predictedPearlPath.add(to);
+            if (y < floor) {
+                return;
+            }
+
+            water = this.touchingWater(x, y, z);
+        }
+    }
+
+    /** Entity.method_5692 for water on the pearl's 0.25 box, contracted by 0.001 like vanilla. */
+    private boolean touchingWater(double x, double y, double z) {
+        double minX = x - PEARL_HALF_WIDTH + 0.001;
+        double maxX = x + PEARL_HALF_WIDTH - 0.001;
+        double minY = y + 0.001;
+        double maxY = y + PEARL_HEIGHT - 0.001;
+        double minZ = z - PEARL_HALF_WIDTH + 0.001;
+        double maxZ = z + PEARL_HALF_WIDTH - 0.001;
+
+        for (int bx = class_3532.method_15357(minX); bx < class_3532.method_15384(maxX); bx++) {
+            for (int by = class_3532.method_15357(minY); by < class_3532.method_15384(maxY); by++) {
+                for (int bz = class_3532.method_15357(minZ); bz < class_3532.method_15384(maxZ); bz++) {
+                    class_2338 pos = new class_2338(bx, by, bz);
+                    class_3610 fluid = this.mc.field_1687.method_8316(pos);
+                    if (fluid.method_15767(class_3486.field_15517) && (float)by + fluid.method_15763(this.mc.field_1687, pos) >= minY) {
+                        return true;
+                    }
+                }
             }
         }
+
+        return false;
+    }
+
+    /** Wind charges hold their velocity: drag 1.0 in air and water, acceleration zeroed, no gravity (class_9236). */
+    private List<class_243> windLine(class_243 start, class_243 velocity) {
+        List<class_243> line = new ArrayList<>(WIND_SIM_TICKS);
+        class_243 pos = start;
+
+        for (int i = 0; i < WIND_SIM_TICKS; i++) {
+            line.add(pos);
+            pos = pos.method_1019(velocity);
+        }
+
+        return line;
+    }
+
+    /**
+     * Ticks between the pearl state we're looking at and the server tick our wind charge first moves in.
+     * We see the pearl a one-way trip late and the wind charge reaches the server a one-way trip late,
+     * so that's a full round trip, plus the tick we wait before throwing.
+     */
+    private int leadTicks() {
+        int ping = 0;
+        if (this.mc.method_1562() != null && this.mc.field_1724 != null) {
+            class_640 entry = this.mc.method_1562().method_2871(this.mc.field_1724.method_5667());
+            if (entry != null) {
+                ping = entry.method_2959();
+            }
+        }
+
+        return 1 + Math.round(ping / 50.0F);
+    }
+
+    private class_1684 findOurPearl() {
+        class_1684 newest = null;
+
+        for (class_1297 entity : this.mc.field_1687.method_18112()) {
+            if (entity instanceof class_1684 pearl && pearl.method_5805()) {
+                if (this.trackedPearl != null) {
+                    if (pearl.method_5667().equals(this.trackedPearl)) {
+                        return pearl;
+                    }
+                } else if (pearl.method_24921() == this.mc.field_1724
+                    && !this.ignoredPearls.contains(pearl.method_5667())
+                    && (newest == null || pearl.field_6012 < newest.field_6012)) {
+                    newest = pearl;
+                }
+            }
+        }
+
+        return newest;
+    }
+
+    private float power(float itemPower) {
+        return itemPower > 0.0F ? itemPower : FALLBACK_POWER;
     }
 
     private boolean isInterceptPossible() {
@@ -254,13 +426,12 @@ public class PearlCatch extends Module {
         class_243 inheritedVelocity = new class_243(
             currentPlayerVel.field_1352, this.mc.field_1724.method_24828() ? 0.0 : currentPlayerVel.field_1351, currentPlayerVel.field_1350
         );
+        double windPower = this.power(class_9239.field_55047);
 
         for (int pearlTick = 5; pearlTick < Math.min(this.predictedPearlPath.size(), 50); pearlTick++) {
             class_243 pearlPos = this.predictedPearlPath.get(pearlTick);
             class_243 aimDir = pearlPos.method_1020(windStartPos).method_1029();
-            List<class_243> windPath = new ArrayList<>();
-            class_243 windVel = aimDir.method_1021(1.5).method_1019(inheritedVelocity);
-            this.simulateProjectile(windStartPos, windVel, 1.0, 0.0, 0.0, windPath);
+            List<class_243> windPath = this.windLine(windStartPos, aimDir.method_1021(windPower).method_1019(inheritedVelocity));
 
             for (int w = 0; w < Math.min(windPath.size(), pearlTick - 2); w++) {
                 int pearlIdx = w + 2;
@@ -277,15 +448,20 @@ public class PearlCatch extends Module {
         return false;
     }
 
-    private PearlCatch.SolverResult solveInterceptWithPrediction(int currentPearlTick, class_243 predictedEyePos, class_243 predictedVel) {
+    /**
+     * The path is anchored at the pearl's current state, so the wind charge's w-th tick lines up with
+     * path index lead + w.
+     */
+    private PearlCatch.SolverResult solveInterceptWithPrediction(int lead, class_243 predictedEyePos, class_243 predictedVel) {
         class_243 windStartPos = predictedEyePos;
         class_243 inheritedVelocity = new class_243(
             predictedVel.field_1352, this.mc.field_1724.method_24828() ? 0.0 : predictedVel.field_1351, predictedVel.field_1350
         );
+        double windPower = this.power(class_9239.field_55047);
         PearlCatch.SolverResult bestResult = null;
         double bestDistance = Double.MAX_VALUE;
-        int searchStart = currentPearlTick + 2;
-        int searchEnd = Math.min(this.predictedPearlPath.size(), currentPearlTick + 50);
+        int searchStart = lead + 1;
+        int searchEnd = Math.min(this.predictedPearlPath.size(), lead + 50);
 
         for (int targetPearlTick = searchStart; targetPearlTick < searchEnd; targetPearlTick++) {
             class_243 targetPearlPos = this.predictedPearlPath.get(targetPearlTick);
@@ -294,12 +470,10 @@ public class PearlCatch extends Module {
             for (double yawOff = -0.3; yawOff <= 0.3; yawOff += 0.05) {
                 for (double pitchOff = -0.3; pitchOff <= 0.3; pitchOff += 0.05) {
                     class_243 testAim = this.rotateVector(baseAim, pitchOff, yawOff);
-                    List<class_243> windPath = new ArrayList<>();
-                    class_243 windVel = testAim.method_1021(1.5).method_1019(inheritedVelocity);
-                    this.simulateProjectile(windStartPos, windVel, 1.0, 0.0, 0.0, windPath);
+                    List<class_243> windPath = this.windLine(windStartPos, testAim.method_1021(windPower).method_1019(inheritedVelocity));
 
-                    for (int w = 0; w < windPath.size(); w++) {
-                        int pearlIdx = currentPearlTick + w + 2;
+                    for (int w = 1; w < windPath.size(); w++) {
+                        int pearlIdx = lead + w;
                         if (pearlIdx >= this.predictedPearlPath.size()) {
                             break;
                         }
@@ -308,17 +482,19 @@ public class PearlCatch extends Module {
                         if (dist < bestDistance && dist < 1.5) {
                             bestDistance = dist;
                             class_243 aimPoint = windStartPos.method_1019(testAim.method_1021(100.0));
-                            bestResult = new PearlCatch.SolverResult(this.predictedPearlPath.get(pearlIdx), aimPoint, pearlIdx - currentPearlTick);
+                            bestResult = new PearlCatch.SolverResult(this.predictedPearlPath.get(pearlIdx), aimPoint, pearlIdx);
                         }
                     }
                 }
             }
         }
 
-        return bestResult != null && bestDistance < 1.2 ? this.refineAim(windStartPos, inheritedVelocity, bestResult, currentPearlTick) : bestResult;
+        return bestResult != null && bestDistance < 1.2 ? this.refineAim(windStartPos, inheritedVelocity, windPower, bestResult, lead) : bestResult;
     }
 
-    private PearlCatch.SolverResult refineAim(class_243 windStartPos, class_243 inheritedVelocity, PearlCatch.SolverResult coarse, int currentPearlTick) {
+    private PearlCatch.SolverResult refineAim(
+        class_243 windStartPos, class_243 inheritedVelocity, double windPower, PearlCatch.SolverResult coarse, int lead
+    ) {
         class_243 coarseAim = coarse.aimDirection.method_1020(windStartPos).method_1029();
         PearlCatch.SolverResult bestResult = coarse;
         double bestDistance = Double.MAX_VALUE;
@@ -326,12 +502,10 @@ public class PearlCatch extends Module {
         for (double yawOff = -0.04; yawOff <= 0.04; yawOff += 0.01) {
             for (double pitchOff = -0.04; pitchOff <= 0.04; pitchOff += 0.01) {
                 class_243 testAim = this.rotateVector(coarseAim, pitchOff, yawOff);
-                List<class_243> windPath = new ArrayList<>();
-                class_243 windVel = testAim.method_1021(1.5).method_1019(inheritedVelocity);
-                this.simulateProjectile(windStartPos, windVel, 1.0, 0.0, 0.0, windPath);
+                List<class_243> windPath = this.windLine(windStartPos, testAim.method_1021(windPower).method_1019(inheritedVelocity));
 
-                for (int w = 0; w < windPath.size(); w++) {
-                    int pearlIdx = currentPearlTick + w + 2;
+                for (int w = 1; w < windPath.size(); w++) {
+                    int pearlIdx = lead + w;
                     if (pearlIdx >= this.predictedPearlPath.size()) {
                         break;
                     }
@@ -340,7 +514,7 @@ public class PearlCatch extends Module {
                     if (dist < bestDistance) {
                         bestDistance = dist;
                         class_243 aimPoint = windStartPos.method_1019(testAim.method_1021(100.0));
-                        bestResult = new PearlCatch.SolverResult(this.predictedPearlPath.get(pearlIdx), aimPoint, pearlIdx - currentPearlTick);
+                        bestResult = new PearlCatch.SolverResult(this.predictedPearlPath.get(pearlIdx), aimPoint, pearlIdx);
                     }
                 }
             }
@@ -398,6 +572,15 @@ public class PearlCatch extends Module {
                     int g = (int)(255.0F - progress * 100.0F);
                     int b = 255;
                     RenderUtils.drawLine(matrices, vertexConsumers, pos, nextPos, new Color(r, g, b), 0.78431374F);
+                }
+
+                if (this.pathLanded) {
+                    class_243 land = this.predictedPearlPath.get(this.predictedPearlPath.size() - 1);
+                    double size = 0.15;
+                    class_238 landBox = new class_238(
+                        land.field_1352 - size, land.field_1351 - size, land.field_1350 - size, land.field_1352 + size, land.field_1351 + size, land.field_1350 + size
+                    );
+                    RenderUtils.drawBox(matrices, vertexConsumers, landBox, new Color(255, 0, 255), 0.7058824F, true);
                 }
 
                 if (this.renderIntercept != null) {
