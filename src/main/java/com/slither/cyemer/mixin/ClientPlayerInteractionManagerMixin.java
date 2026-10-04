@@ -53,6 +53,11 @@ public class ClientPlayerInteractionManagerMixin {
         if (lagReachModule != null && lagReachModule.isEnabled()) {
             ModuleAccess.invoke(lagReachModule, "notifyAttack", null);
         }
+
+        Module windClutchModule = Cyemer.getInstance().getModuleManager().getModule("WindClutch");
+        if (windClutchModule != null && windClutchModule.isEnabled()) {
+            ModuleAccess.invoke(windClutchModule, "onAttack", null);
+        }
     }
 
     @Inject(

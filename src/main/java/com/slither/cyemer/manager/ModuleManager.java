@@ -33,6 +33,7 @@ import com.slither.cyemer.module.implementation.PearlCatch;
 import com.slither.cyemer.module.implementation.Prevent;
 import com.slither.cyemer.module.implementation.SelfDestruct;
 import com.slither.cyemer.module.implementation.Sprint;
+import com.slither.cyemer.module.implementation.WindClutch;
 import com.slither.cyemer.module.implementation.StreamProof;
 import com.slither.cyemer.module.implementation.StreamerModeModule;
 import com.slither.cyemer.module.implementation.TargetEffect;
@@ -135,6 +136,7 @@ public class ModuleManager {
         this.modules.add(new WindChargeKey());
         this.modules.add(new Nametags());
         this.modules.add(new PearlCatch());
+        this.modules.add(new WindClutch());
         this.modules.add(new ElytraSwap());
         this.modules.add(new ClickGUIModule());
         this.modules.add(new CustomFont());

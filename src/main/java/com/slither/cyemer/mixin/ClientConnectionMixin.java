@@ -23,6 +23,14 @@ public class ClientConnectionMixin {
     private void onSendPacket(class_2596<?> packet, CallbackInfo ci) {
         class_310 client = class_310.method_1551();
         if (client != null && client.field_1724 != null && client.field_1687 != null) {
+            Module windClutch = ModuleAccess.getModule("WindClutch");
+            if (windClutch != null
+                && windClutch.isEnabled()
+                && ModuleAccess.invokeBoolean(windClutch, "handleOutgoingPacket", false, new Class[]{class_2596.class}, packet)) {
+                ci.cancel();
+                return;
+            }
+
             Module blink = ModuleAccess.getModule("Blink");
             if (blink != null && blink.isEnabled() && ModuleAccess.invokeBoolean(blink, "handleOutgoingPacket", false, new Class[]{class_2596.class}, packet)) {
                 ci.cancel();

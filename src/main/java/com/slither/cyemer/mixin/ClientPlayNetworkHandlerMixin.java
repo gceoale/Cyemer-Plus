@@ -52,6 +52,11 @@ public abstract class ClientPlayNetworkHandlerMixin {
         if (fakelag != null && fakelag.isEnabled()) {
             ModuleAccess.invoke(fakelag, "sendQueuedPackets", null);
         }
+
+        Module windClutch = ModuleAccess.getModule("WindClutch");
+        if (windClutch != null && windClutch.isEnabled()) {
+            ModuleAccess.invoke(windClutch, "onExplosion", new Class[]{class_2664.class}, packet);
+        }
     }
 
     @Inject(
