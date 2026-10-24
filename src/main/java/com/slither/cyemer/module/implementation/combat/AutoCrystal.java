@@ -27,7 +27,9 @@ public class AutoCrystal extends Module {
     private final BooleanSetting blockOnShield = new BooleanSetting("Block On Shield", true);
     private final BooleanSetting swapBackToSword = new BooleanSetting("Swap Back to Sword", true);
     private final BooleanSetting swapBackToTotem = new BooleanSetting("Swap Back to Totem", true);
+    private final BooleanSetting debugGates = new BooleanSetting("Debug Gates", false);
     private long lastActionTime = 0L;
+    private long lastDebugAt = 0L;
     private int lastRestoreSlot = -1;
     private boolean restoreSlotNextTick = false;
     private static final double REACH_DISTANCE_SQUARED = 20.25;
@@ -42,6 +44,7 @@ public class AutoCrystal extends Module {
         this.addSetting(this.blockOnShield);
         this.addSetting(this.swapBackToSword);
         this.addSetting(this.swapBackToTotem);
+        this.addSetting(this.debugGates);
     }
 
     @Override
@@ -67,6 +70,8 @@ public class AutoCrystal extends Module {
                     this.mc.field_1724.method_31548().method_61496(this.lastRestoreSlot);
                 }
             }
+
+            this.reportGates();
 
             if ((!this.onlyOnRightClick.isEnabled() || this.mc.field_1690.field_1904.method_1434())
                 && System.currentTimeMillis() - this.lastActionTime >= this.delay.getValue()) {
@@ -97,6 +102,52 @@ public class AutoCrystal extends Module {
                 }
             }
         }
+    }
+
+    /**
+     * Temporary diagnostic: prints the state of every gate in the place path,
+     * at most once a second and only while Debug Gates is on, so it cannot
+     * flood the log. Meant to be read once and then taken back out.
+     */
+    private void reportGates() {
+        if (!this.debugGates.isEnabled()) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - this.lastDebugAt < 1000L) {
+            return;
+        }
+        this.lastDebugAt = now;
+
+        class_1799 held = this.mc.field_1724.method_6047();
+        class_239 target = this.mc.field_1765;
+        boolean useHeld = this.mc.field_1690.field_1904.method_1434();
+        boolean delayOk = now - this.lastActionTime >= this.delay.getValue();
+        boolean isBlockHit = target instanceof class_3965;
+        boolean isEntityHit = target instanceof class_3966;
+        String baseBlock = "n/a";
+        boolean validBase = false;
+        boolean airAbove = false;
+        if (target instanceof class_3965 bh) {
+            class_2248 b = this.mc.field_1687.method_8320(bh.method_17777()).method_26204();
+            baseBlock = String.valueOf(b);
+            validBase = this.isValidCrystalBase(b);
+            airAbove = this.mc.field_1687.method_8320(bh.method_17777().method_10084()).method_26215();
+        }
+
+        System.out.println("[AutoCrystal] held=" + held.method_7909()
+                + " useHeld=" + useHeld
+                + " delayOk=" + delayOk
+                + " blockHit=" + isBlockHit
+                + " entityHit=" + isEntityHit
+                + " base=" + baseBlock
+                + " validBase=" + validBase
+                + " airAbove=" + airAbove
+                + " shieldBlocked=" + (this.blockOnShield.isEnabled() && this.holdingShield())
+                + " alreadyCrystal=" + (held.method_7909() instanceof class_1774)
+                + " crystalSlot=" + this.findCrystalInHotbar()
+                + " breakTarget=" + (this.findCrystalToBreak() != null)
+                + " restoreSlot=" + this.lastRestoreSlot);
     }
 
     private boolean holdingShield() {
