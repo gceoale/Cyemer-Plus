@@ -79,7 +79,7 @@ public class AutoCrystal extends Module {
                         && !(this.blockOnShield.isEnabled() && this.holdingShield())
                         && this.mc.field_1690.field_1904.method_1434()
                         && target instanceof class_3965 hit
-                        && this.mc.field_1687.method_8320(hit.method_17777()).method_26204() == class_2246.field_10540
+                        && this.isValidCrystalBase(this.mc.field_1687.method_8320(hit.method_17777()).method_26204())
                         && !(this.mc.field_1724.method_6047().method_7909() instanceof class_1774)) {
                         int crystalSlot = this.findCrystalInHotbar();
                         if (crystalSlot != -1) {
