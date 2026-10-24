@@ -7,6 +7,7 @@ import com.slither.cyemer.module.Module;
 import com.slither.cyemer.util.AttackValidator;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.minecraft.class_1309;
 import net.minecraft.class_1713;
 import net.minecraft.class_1799;
 import net.minecraft.class_1802;
@@ -65,8 +66,12 @@ public class TotemHit extends Module {
         if (!isTotem(this.mc.field_1724.method_6047())) {
             return false;
         }
-        // Nothing under the crosshair means there is no hit to rescue.
-        if (!(this.mc.field_1765 instanceof class_3966)) {
+        // Only a living target is worth rescuing a hit on. End crystals are
+        // entities too, and they detonate from any hit regardless of what swung,
+        // so intercepting those would cancel AutoCrystal's detonation and fight
+        // it for the hotbar slot for no damage gained.
+        if (!(this.mc.field_1765 instanceof class_3966 entityHit)
+                || !(entityHit.method_17782() instanceof class_1309)) {
             return false;
         }
 
