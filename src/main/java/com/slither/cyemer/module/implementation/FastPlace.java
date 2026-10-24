@@ -10,11 +10,11 @@ import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.class_1747;
 import net.minecraft.class_1771;
-import net.minecraft.class_1774;
 import net.minecraft.class_1777;
 import net.minecraft.class_1779;
 import net.minecraft.class_1792;
 import net.minecraft.class_1799;
+import net.minecraft.class_1802;
 import net.minecraft.class_1823;
 import net.minecraft.class_2246;
 import net.minecraft.class_4537;
@@ -59,7 +59,7 @@ public class FastPlace extends Module {
         } else {
             class_1792 item = stack.method_7909();
             if (this.crystalOnly.isEnabled()) {
-                return item instanceof class_1774;
+                return item == class_1802.field_8301;
             }
             String currentMode = this.filter.getCurrentMode();
             if (item instanceof class_1747 blockItem) {
