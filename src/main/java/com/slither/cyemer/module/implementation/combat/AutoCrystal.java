@@ -26,7 +26,13 @@ public class AutoCrystal extends Module {
     private final BooleanSetting blockOnShield = new BooleanSetting("Block On Shield", true);
     private final BooleanSetting swapBackToSword = new BooleanSetting("Swap Back to Sword", true);
     private final BooleanSetting swapBackToTotem = new BooleanSetting("Swap Back to Totem", true);
+    private final BooleanSetting debugGates = new BooleanSetting("Debug Gates", false);
     private long lastActionTime = 0L;
+    private long lastDebugAt = 0L;
+    private boolean dbgLoopEntered = false;
+    private boolean dbgSwapFired = false;
+    private boolean dbgPlaceFired = false;
+    private boolean dbgBreakFired = false;
     private int lastRestoreSlot = -1;
     private boolean restoreSlotNextTick = false;
     private static final double REACH_DISTANCE_SQUARED = 20.25;
@@ -41,6 +47,7 @@ public class AutoCrystal extends Module {
         this.addSetting(this.blockOnShield);
         this.addSetting(this.swapBackToSword);
         this.addSetting(this.swapBackToTotem);
+        this.addSetting(this.debugGates);
     }
 
     @Override
@@ -52,6 +59,11 @@ public class AutoCrystal extends Module {
             // totem back afterwards, not strand you on an empty hand or on whatever
             // sword you happened to hold several seconds ago.
             // No SwordItem class in 1.21.11, match on the item's registry name.
+            this.dbgLoopEntered = false;
+            this.dbgSwapFired = false;
+            this.dbgPlaceFired = false;
+            this.dbgBreakFired = false;
+
             class_1799 heldStack = this.mc.field_1724.method_6047();
             if ((this.swapBackToSword.isEnabled() && isSword(heldStack))
                     || (this.swapBackToTotem.isEnabled() && isTotem(heldStack))) {
@@ -69,8 +81,10 @@ public class AutoCrystal extends Module {
 
             if ((!this.onlyOnRightClick.isEnabled() || this.mc.field_1690.field_1904.method_1434())
                 && System.currentTimeMillis() - this.lastActionTime >= this.delay.getValue()) {
+                this.dbgLoopEntered = true;
                 class_1511 crystalToBreak = this.findCrystalToBreak();
                 if (crystalToBreak != null) {
+                    this.dbgBreakFired = true;
                     this.performBreakAction(crystalToBreak);
                 } else {
                     class_239 target = this.mc.field_1765;
@@ -82,6 +96,7 @@ public class AutoCrystal extends Module {
                         && !isCrystal(this.mc.field_1724.method_6047())) {
                         int crystalSlot = this.findCrystalInHotbar();
                         if (crystalSlot != -1) {
+                            this.dbgSwapFired = true;
                             this.mc.field_1724.method_31548().method_61496(crystalSlot);
                         }
                     }
@@ -91,11 +106,59 @@ public class AutoCrystal extends Module {
                         && this.mc.field_1724.method_5707(hitx.method_17777().method_46558()) <= 20.25
                         && this.isValidCrystalBase(this.mc.field_1687.method_8320(hitx.method_17777()).method_26204())
                         && this.mc.field_1687.method_8320(hitx.method_17777().method_10084()).method_26215()) {
+                        this.dbgPlaceFired = true;
                         this.performPlaceAction(hitx);
                     }
                 }
             }
+
+            this.reportGates();
         }
+    }
+
+    /**
+     * Temporary diagnostic. Reports both the gate states and which actions
+     * actually fired, at most once a second and only while Debug Gates is on.
+     */
+    private void reportGates() {
+        if (!this.debugGates.isEnabled()) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - this.lastDebugAt < 1000L) {
+            return;
+        }
+        this.lastDebugAt = now;
+
+        class_1799 held = this.mc.field_1724.method_6047();
+        class_239 target = this.mc.field_1765;
+        String baseBlock = "n/a";
+        boolean validBase = false;
+        boolean airAbove = false;
+        if (target instanceof class_3965 bh) {
+            class_2248 b = this.mc.field_1687.method_8320(bh.method_17777()).method_26204();
+            baseBlock = String.valueOf(b);
+            validBase = this.isValidCrystalBase(b);
+            airAbove = this.mc.field_1687.method_8320(bh.method_17777().method_10084()).method_26215();
+        }
+
+        System.out.println("[AutoCrystal] held=" + held.method_7909()
+                + " slot=" + this.mc.field_1724.method_31548().method_67532()
+                + " useHeld=" + this.mc.field_1690.field_1904.method_1434()
+                + " useCooldown=" + this.mc.field_1771
+                + " loopEntered=" + this.dbgLoopEntered
+                + " blockHit=" + (target instanceof class_3965)
+                + " entityHit=" + (target instanceof class_3966)
+                + " base=" + baseBlock
+                + " validBase=" + validBase
+                + " airAbove=" + airAbove
+                + " isCrystalHeld=" + isCrystal(held)
+                + " crystalSlot=" + this.findCrystalInHotbar()
+                + " breakTarget=" + (this.findCrystalToBreak() != null)
+                + " | FIRED swap=" + this.dbgSwapFired
+                + " place=" + this.dbgPlaceFired
+                + " break=" + this.dbgBreakFired
+                + " restoreSlot=" + this.lastRestoreSlot);
     }
 
     private boolean holdingShield() {
