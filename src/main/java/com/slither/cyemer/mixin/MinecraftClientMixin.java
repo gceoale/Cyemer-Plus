@@ -140,6 +140,15 @@ public abstract class MinecraftClientMixin {
                     return;
                 }
             }
+
+            Module totemHitModule = Cyemer.getInstance().getModuleManager().getModule("TotemHit");
+            if (totemHitModule != null && totemHitModule.isEnabled()) {
+                boolean handled = ModuleAccess.invokeBoolean(totemHitModule, "handleAttack", false, null);
+                if (handled) {
+                    cir.setReturnValue(false);
+                    return;
+                }
+            }
         }
     }
 

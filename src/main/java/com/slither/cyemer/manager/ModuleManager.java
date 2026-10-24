@@ -65,6 +65,7 @@ import com.slither.cyemer.module.implementation.combat.PearlCharge;
 import com.slither.cyemer.module.implementation.combat.PearlChaser;
 import com.slither.cyemer.module.implementation.combat.PearlMacro;
 import com.slither.cyemer.module.implementation.combat.Shielddrain;
+import com.slither.cyemer.module.implementation.combat.TotemHit;
 import com.slither.cyemer.module.implementation.combat.TriggerBot;
 import com.slither.cyemer.module.implementation.combat.WTap;
 import com.slither.cyemer.module.implementation.combat.WindChargeHitter;
@@ -162,6 +163,7 @@ public class ModuleManager {
         this.modules.add(new LagReach());
         this.modules.add(new WindChargeHitter());
         this.modules.add(new PearlChaser());
+        this.modules.add(new TotemHit());
     }
 
     public void onTick() {

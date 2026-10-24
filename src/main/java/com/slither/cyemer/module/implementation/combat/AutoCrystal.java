@@ -26,9 +26,10 @@ public class AutoCrystal extends Module {
     private final BooleanSetting swapToCrystal = new BooleanSetting("Swap to crystal on Right Click", true);
     private final BooleanSetting blockOnShield = new BooleanSetting("Block On Shield", true);
     private final BooleanSetting swapBackToSword = new BooleanSetting("Swap Back to Sword", true);
+    private final BooleanSetting swapBackToTotem = new BooleanSetting("Swap Back to Totem", true);
     private long lastActionTime = 0L;
-    private int lastSwordSlot = -1;
-    private boolean restoreSwordNextTick = false;
+    private int lastRestoreSlot = -1;
+    private boolean restoreSlotNextTick = false;
     private static final double REACH_DISTANCE_SQUARED = 20.25;
     private static final double ATTACK_REACH = 4.5;
 
@@ -40,24 +41,30 @@ public class AutoCrystal extends Module {
         this.addSetting(this.swapToCrystal);
         this.addSetting(this.blockOnShield);
         this.addSetting(this.swapBackToSword);
+        this.addSetting(this.swapBackToTotem);
     }
 
     @Override
     public void onTick() {
         if (this.mc.field_1724 != null && this.mc.field_1687 != null && this.mc.field_1761 != null) {
-            // Remember the hotbar slot the user was holding when it was a sword
-            // - this is what we restore to after the swap-to-crystal sequence.
+            // Remember the hotbar slot the user was holding so the swap-to-crystal
+            // sequence can put them back on it. A totem counts the same as a sword
+            // here: right-clicking a crystal down while holding one should hand the
+            // totem back afterwards, not strand you on an empty hand or on whatever
+            // sword you happened to hold several seconds ago.
             // No SwordItem class in 1.21.11, match on the item's registry name.
-            if (isSword(this.mc.field_1724.method_6047())) {
-                this.lastSwordSlot = this.mc.field_1724.method_31548().method_67532();
+            class_1799 heldStack = this.mc.field_1724.method_6047();
+            if ((this.swapBackToSword.isEnabled() && isSword(heldStack))
+                    || (this.swapBackToTotem.isEnabled() && isTotem(heldStack))) {
+                this.lastRestoreSlot = this.mc.field_1724.method_31548().method_67532();
             }
 
             // Deferred restore fires the tick after a crystal placement, once
             // MC's use-key handler has actually consumed the placement.
-            if (this.restoreSwordNextTick) {
-                this.restoreSwordNextTick = false;
-                if (this.swapBackToSword.isEnabled() && this.lastSwordSlot != -1) {
-                    this.mc.field_1724.method_31548().method_61496(this.lastSwordSlot);
+            if (this.restoreSlotNextTick) {
+                this.restoreSlotNextTick = false;
+                if (this.lastRestoreSlot != -1) {
+                    this.mc.field_1724.method_31548().method_61496(this.lastRestoreSlot);
                 }
             }
 
@@ -97,6 +104,10 @@ public class AutoCrystal extends Module {
                 || this.mc.field_1724.method_6079().method_7909() == class_1802.field_8255;
     }
 
+    private static boolean isTotem(class_1799 stack) {
+        return stack != null && stack.method_31574(class_1802.field_8288);
+    }
+
     private static boolean isSword(class_1799 stack) {
         if (stack == null || stack.method_7960()) return false;
         return stack.method_7909().toString().toLowerCase().contains("sword");
@@ -124,7 +135,7 @@ public class AutoCrystal extends Module {
         }
 
         this.lastActionTime = System.currentTimeMillis();
-        this.restoreSwordNextTick = true;
+        this.restoreSlotNextTick = true;
     }
 
     private class_1511 findCrystalToBreak() {
