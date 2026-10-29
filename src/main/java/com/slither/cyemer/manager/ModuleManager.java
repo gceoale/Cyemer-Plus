@@ -31,6 +31,7 @@ import com.slither.cyemer.module.implementation.PotRefill;
 import com.slither.cyemer.module.implementation.ObsidianGlow;
 import com.slither.cyemer.module.implementation.PearlCatch;
 import com.slither.cyemer.module.implementation.Prevent;
+import com.slither.cyemer.module.implementation.Scaffold;
 import com.slither.cyemer.module.implementation.SelfDestruct;
 import com.slither.cyemer.module.implementation.Sprint;
 import com.slither.cyemer.module.implementation.WindClutch;
@@ -161,6 +162,7 @@ public class ModuleManager {
         this.modules.add(new NPotRefill());
         this.modules.add(new StreamProof());
         this.modules.add(new LagReach());
+        this.modules.add(new Scaffold());
         this.modules.add(new WindChargeHitter());
         this.modules.add(new PearlChaser());
         this.modules.add(new TotemHit());
