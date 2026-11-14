@@ -29,8 +29,10 @@ import net.minecraft.class_2246;
 import net.minecraft.class_2248;
 import net.minecraft.class_2338;
 import net.minecraft.class_2561;
+import net.minecraft.class_1297;
 import net.minecraft.class_2586;
 import net.minecraft.class_2591;
+import net.minecraft.class_2636;
 import net.minecraft.class_2680;
 import net.minecraft.class_238;
 import net.minecraft.class_243;
@@ -75,6 +77,8 @@ import net.minecraft.class_9799;
  * once each, scored so natural loot stays quiet: a shulker box never
  * generates and alerts on its own, spawners count 3 and hoppers 2 toward the
  * threshold, everything else 1 - a dungeon (spawner and two chests) is 5.
+ * Flag Spawners goes further and calls out every mob spawner by itself,
+ * with the mob it spawns, past the threshold and the density filter.
  *
  * The density filter holds back any find - activity or stash - with fewer
  * than Filter Min Blocks distinct detected blocks within Filter Radius chunks
@@ -249,6 +253,7 @@ public class FarmFinder extends Module {
     private final BooleanSetting chests = new BooleanSetting("Chests", true);
     private final BooleanSetting shulkers = new BooleanSetting("Shulkers", true);
     private final BooleanSetting spawners = new BooleanSetting("Spawners", true);
+    private final BooleanSetting flagSpawners = new BooleanSetting("Flag Spawners", true);
     private final BooleanSetting baseBlocks = new BooleanSetting("Base Blocks", true);
     private final BooleanSetting blockUpdates = new BooleanSetting("Block Updates", true);
     private final BooleanSetting stashScan = new BooleanSetting("Stash Scan", true);
@@ -289,6 +294,8 @@ public class FarmFinder extends Module {
             return this.size() > MAX_MARKS;
         }
     };
+    /** Spawners already flagged this session, as FarmRoute keys. */
+    private final Set<Long> flaggedSpawners = new HashSet<>();
     /** Centres of stashes already announced this session. */
     private final List<int[]> stashAlerts = new ArrayList<>();
     private long lastStashScanAt = 0L;
@@ -343,6 +350,9 @@ public class FarmFinder extends Module {
 
     private record Stash(int x, int y, int z, String summary, int total, double distance) {}
 
+    /** mob is null when the server has not told the client what it spawns. */
+    private record SpawnerHit(int x, int y, int z, String mob, double distance) {}
+
     public FarmFinder() {
         super("FarmFinder", "Alerts when redstone farm parts fire nearby: pistons, observers, smelters and more.", Category.DONUT_SMP);
         this.addSetting(this.pistons);
@@ -356,6 +366,7 @@ public class FarmFinder extends Module {
         this.addSetting(this.chests);
         this.addSetting(this.shulkers);
         this.addSetting(this.spawners);
+        this.addSetting(this.flagSpawners);
         this.addSetting(this.baseBlocks);
         this.addSetting(this.blockUpdates);
         this.addSetting(this.stashScan);
@@ -447,7 +458,7 @@ public class FarmFinder extends Module {
             this.rebuildDensity();
         }
 
-        if (this.stashScan.isEnabled() && now - this.lastStashScanAt >= STASH_SCAN_MS) {
+        if ((this.stashScan.isEnabled() || this.flagSpawners.isEnabled()) && now - this.lastStashScanAt >= STASH_SCAN_MS) {
             this.lastStashScanAt = now;
             this.scanStashes();
         }
@@ -607,6 +618,7 @@ public class FarmFinder extends Module {
 
     private void resetStashes() {
         this.stashAlerts.clear();
+        this.flaggedSpawners.clear();
         this.lastStashSignature = 0L;
         this.lastStashCount = -1;
         this.stashPositions = new HashSet<>();
@@ -661,7 +673,13 @@ public class FarmFinder extends Module {
             return;
         }
         Map<class_2591<?>, Source> sources = stashSources();
+        boolean stash = this.stashScan.isEnabled();
+        boolean flag = this.flagSpawners.isEnabled();
+        double px = self.method_23317();
+        double py = self.method_23318();
+        double pz = self.method_23321();
         List<Found> found = new ArrayList<>();
+        List<SpawnerHit> freshSpawners = new ArrayList<>();
         long signature = 0L;
         int pcx = (int) Math.floor(self.method_23317()) >> 4;
         int pcz = (int) Math.floor(self.method_23321()) >> 4;
@@ -672,6 +690,21 @@ public class FarmFinder extends Module {
                 }
                 class_2818 chunk = world.method_8497(cx, cz);
                 for (class_2586 entity : chunk.method_12214().values()) {
+                    if (flag && entity instanceof class_2636 spawner) {
+                        class_2338 pos = entity.method_11016();
+                        int x = pos.method_10263();
+                        int y = pos.method_10264();
+                        int z = pos.method_10260();
+                        this.mark(Family.SPAWNER, x, y, z); // always highlighted while loaded
+                        long key = FarmRoute.key(x, y, z);
+                        double distance = Math.sqrt(distSq(x + 0.5, y + 0.5, z + 0.5, px, py, pz));
+                        if (!this.flaggedSpawners.contains(key) && distance >= this.minDistance.getValue()) {
+                            freshSpawners.add(new SpawnerHit(x, y, z, mobName(world, spawner, pos), distance));
+                        }
+                    }
+                    if (!stash) {
+                        continue;
+                    }
                     Source source = sources.get(entity.method_11017());
                     if (source == null || !this.familyEnabled(source.family())) {
                         continue;
@@ -685,12 +718,19 @@ public class FarmFinder extends Module {
             }
         }
 
+        if (!freshSpawners.isEmpty()) {
+            this.flagSpawners(freshSpawners);
+        }
+
         Set<Long> positions = new HashSet<>();
         for (Found f : found) {
             positions.add(FarmRoute.key(f.x(), f.y(), f.z()));
         }
         this.stashPositions = positions;
         this.rebuildDensity();
+        if (!stash) {
+            return;
+        }
 
         // Rescore when the block entities change, and every 10 s regardless:
         // activity alone can lift a spot over the density filter.
@@ -713,6 +753,95 @@ public class FarmFinder extends Module {
                 }
             }
         }
+    }
+
+    /**
+     * Every spawner is news on its own, so these skip the stash threshold and
+     * the density filter. Spawners within a cluster of each other are one
+     * message ("12 spawners (8 skeleton, 4 zombie)") rather than twelve.
+     */
+    private void flagSpawners(List<SpawnerHit> fresh) {
+        int reach = this.stashRadius() * 2;
+        boolean[] used = new boolean[fresh.size()];
+        List<List<SpawnerHit>> groups = new ArrayList<>();
+        for (int i = 0; i < fresh.size(); i++) {
+            if (used[i]) {
+                continue;
+            }
+            SpawnerHit anchor = fresh.get(i);
+            List<SpawnerHit> group = new ArrayList<>();
+            for (int j = i; j < fresh.size(); j++) {
+                SpawnerHit s = fresh.get(j);
+                if (!used[j] && Math.abs(s.x() - anchor.x()) <= reach && Math.abs(s.y() - anchor.y()) <= reach
+                        && Math.abs(s.z() - anchor.z()) <= reach) {
+                    used[j] = true;
+                    group.add(s);
+                    this.flaggedSpawners.add(FarmRoute.key(s.x(), s.y(), s.z()));
+                }
+            }
+            group.sort(Comparator.comparingDouble(SpawnerHit::distance));
+            groups.add(group);
+        }
+        groups.sort(Comparator.comparingDouble(g -> g.get(0).distance()));
+
+        class_746 self = this.mc.field_1724;
+        double px = self == null ? 0.0 : self.method_23317();
+        double pz = self == null ? 0.0 : self.method_23321();
+        for (int i = 0; i < groups.size(); i++) {
+            List<SpawnerHit> group = groups.get(i);
+            SpawnerHit nearest = group.get(0);
+            Map<String, Integer> mobs = new HashMap<>();
+            for (SpawnerHit s : group) {
+                mobs.merge(s.mob() == null ? "Unknown" : s.mob(), 1, Integer::sum);
+            }
+            String label = mobs.size() == 1 && nearest.mob() != null ? nearest.mob() + " Spawner" : "Spawner";
+            double dx = nearest.x() + 0.5 - px;
+            double dz = nearest.z() + 0.5 - pz;
+            if (i == 0) {
+                this.stopAutoRtp(label, nearest.x(), nearest.y(), nearest.z(), nearest.distance(), dx, dz);
+                this.offerTarget(label, nearest.x(), nearest.y(), nearest.z(), nearest.distance());
+            }
+            if (i >= STASH_ANNOUNCE_MAX) {
+                continue;
+            }
+            int distance = (int) Math.round(nearest.distance());
+            String direction = compass(dx, dz);
+            String head = group.size() == 1 ? "Spawner" : group.size() + " Spawners";
+            String kinds = group.size() == 1 ? (nearest.mob() == null ? "type unknown" : nearest.mob()) : summarize(mobs);
+            if (this.chat.isEnabled()) {
+                this.say("§6[FarmFinder]§r §d" + head + "§r §f(" + kinds + ")§r §7" + distance + "m " + direction
+                        + " §8(" + nearest.x() + ", " + nearest.y() + ", " + nearest.z() + ")");
+            }
+            if (this.toast.isEnabled()
+                    && Cyemer.getInstance().getModuleManager().getModule("Notifications") instanceof Notifications notifications) {
+                notifications.info("Farm Finder", head + " · " + kinds + " · " + distance + "m " + direction);
+            }
+            if (i == 0 && this.ping.isEnabled()) {
+                class_1144 manager = this.mc.method_1483();
+                if (manager != null) {
+                    manager.method_4873(class_1109.method_47978(class_3417.field_14622, 1.6F));
+                }
+            }
+        }
+        if (groups.size() > STASH_ANNOUNCE_MAX) {
+            this.say("§6[FarmFinder]§r §d+" + (groups.size() - STASH_ANNOUNCE_MAX) + " more spawner spots§r §7in range, highlighted");
+        }
+    }
+
+    /**
+     * The mob a spawner shows spinning in its cage, which is what it spawns.
+     * Same call the vanilla spawner renderer makes every frame; null when the
+     * server sent no spawn data.
+     */
+    private static String mobName(class_638 world, class_2636 spawner, class_2338 pos) {
+        try {
+            class_1297 shown = spawner.method_11390().method_8283(world, pos);
+            if (shown != null) {
+                return shown.method_5864().method_5897().getString();
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
     }
 
     /** Half the cluster size: blocks this close to each other belong to one stash. */
