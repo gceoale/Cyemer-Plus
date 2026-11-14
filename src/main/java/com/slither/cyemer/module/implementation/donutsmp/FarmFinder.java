@@ -10,9 +10,14 @@ import com.slither.cyemer.module.StringSetting;
 import com.slither.cyemer.module.implementation.Notifications;
 import com.slither.cyemer.util.render.RenderUtils;
 import java.awt.Color;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.class_1109;
@@ -24,6 +29,8 @@ import net.minecraft.class_2246;
 import net.minecraft.class_2248;
 import net.minecraft.class_2338;
 import net.minecraft.class_2561;
+import net.minecraft.class_2586;
+import net.minecraft.class_2591;
 import net.minecraft.class_2680;
 import net.minecraft.class_238;
 import net.minecraft.class_243;
@@ -36,6 +43,7 @@ import net.minecraft.class_4597.class_4598;
 import net.minecraft.class_634;
 import net.minecraft.class_638;
 import net.minecraft.class_746;
+import net.minecraft.class_2818;
 import net.minecraft.class_9799;
 
 /**
@@ -53,12 +61,26 @@ import net.minecraft.class_9799;
  * 16 to 32 for smelters, which are sampled by display ticks around the player.
  *
  * Block updates come from ClientWorldMixin, which sees every server-driven
- * block change in a loaded chunk. This exists for observers, which make no
- * sound at all in 1.21.11 - but a pulse flips their powered state and that
- * change is synced to every client watching the chunk. The same channel picks
- * pistons up across the whole loaded area rather than just inside hearing
- * range. Only a state change on a block that was already that block counts,
- * so placing, breaking, chunk loading or an anti-xray reveal never trips it.
+ * block change in a loaded chunk, so this channel reaches as far as the
+ * client can see. Observers make no sound at all in 1.21.11, but a pulse
+ * flips their powered state and that change is synced to every client
+ * watching the chunk; likewise a furnace lighting, a dropper firing, a hopper
+ * locking, a comparator reading a chest, dust carrying power. Only a state
+ * change on a block that was already that block counts, so placing,
+ * breaking, chunk loading or an anti-xray reveal never trips it.
+ *
+ * The stash scan reads the block entities the server sends with every chunk
+ * (chests, shulkers, hoppers, spawners...) across all loaded chunks, so it
+ * finds a base whether or not anything in it is running. Dense spots alert
+ * once each, scored so natural loot stays quiet: a shulker box never
+ * generates and alerts on its own, spawners count 3 and hoppers 2 toward the
+ * threshold, everything else 1 - a dungeon (spawner and two chests) is 5.
+ *
+ * The density filter holds back any find - activity or stash - with fewer
+ * than Filter Min Blocks distinct detected blocks within Filter Radius chunks
+ * of it, counting both recent activity and the scanned block entities, so a
+ * lone furnace or a village chest stays quiet while a real farm, which keeps
+ * firing from block after block, gets through once enough of it has shown.
  *
  * Every block that fires is highlighted through walls for a while, and the
  * first find becomes a route target: FarmRoute plans a walking path to beside
@@ -72,11 +94,16 @@ public class FarmFinder extends Module {
     /** Clusters unheard for this long are forgotten. */
     private static final long CLUSTER_TTL_MS = 5L * 60L * 1000L;
     private static final String[] COMPASS = {"N", "NE", "E", "SE", "S", "SW", "W", "NW"};
-    private static final int MAX_MARKS = 600;
+    private static final int MAX_MARKS = 2000;
     /** Eye to target centre: close enough to see and reach it. */
     private static final double ARRIVE_DISTANCE = 4.0;
-    /** Further than this from the target means we teleported away from it. */
-    private static final double TARGET_DROP_DISTANCE = 400.0;
+    /** This much further from the target than when it was found means we teleported away. */
+    private static final double TARGET_DROP_SLACK = 128.0;
+    private static final long STASH_SCAN_MS = 2500L;
+    /** Chunks either side of us to look at; anything loaded is inside this. */
+    private static final int STASH_SCAN_RADIUS = 32;
+    /** Stashes announced individually per scan; the rest are summed up in one line. */
+    private static final int STASH_ANNOUNCE_MAX = 3;
     /** Planning time per tick; the search resumes next tick from where it stopped. */
     private static final long PLAN_BUDGET_NS = 3_000_000L;
     private static final Color MINE_COLOR = new Color(255, 70, 70);
@@ -89,7 +116,12 @@ public class FarmFinder extends Module {
         DISPENSER(new Color(200, 200, 200)),
         CRAFTER(new Color(255, 215, 90)),
         REDSTONE(new Color(255, 60, 60)),
-        COMPOSTER(new Color(180, 130, 70));
+        COMPOSTER(new Color(180, 130, 70)),
+        HOPPER(new Color(130, 140, 165)),
+        CHEST(new Color(215, 150, 60)),
+        SHULKER(new Color(220, 100, 255)),
+        SPAWNER(new Color(255, 50, 170)),
+        BASE(new Color(60, 255, 200));
 
         final Color color;
 
@@ -124,8 +156,85 @@ public class FarmFinder extends Module {
         }
     }
 
-    private static final Source OBSERVER_SOURCE = new Source(Family.OBSERVER, "Observer");
-    private static final Source PISTON_SOURCE = new Source(Family.PISTON, "Piston");
+    /** Blocks whose state flipping in place means a machine ran. Built on first use, after Blocks exists. */
+    private static Map<class_2248, Source> blockSources;
+    /** Block entity types the stash scan counts. */
+    private static Map<class_2591<?>, Source> stashSources;
+
+    private static Map<class_2248, Source> blockSources() {
+        if (blockSources == null) {
+            Map<class_2248, Source> m = new HashMap<>();
+            m.put(class_2246.field_10282, new Source(Family.OBSERVER, "Observer"));
+            Source piston = new Source(Family.PISTON, "Piston");
+            m.put(class_2246.field_10560, piston);
+            m.put(class_2246.field_10615, piston);
+            m.put(class_2246.field_10181, new Source(Family.SMELTER, "Furnace"));
+            m.put(class_2246.field_16334, new Source(Family.SMELTER, "Smoker"));
+            m.put(class_2246.field_16333, new Source(Family.SMELTER, "Blast Furnace"));
+            m.put(class_2246.field_10200, new Source(Family.DISPENSER, "Dispenser"));
+            m.put(class_2246.field_10228, new Source(Family.DISPENSER, "Dropper"));
+            m.put(class_2246.field_46797, new Source(Family.CRAFTER, "Crafter"));
+            m.put(class_2246.field_10312, new Source(Family.HOPPER, "Hopper"));
+            m.put(class_2246.field_17563, new Source(Family.COMPOSTER, "Composter"));
+            m.put(class_2246.field_10091, new Source(Family.REDSTONE, "Redstone Dust"));
+            Source torch = new Source(Family.REDSTONE, "Redstone Torch");
+            m.put(class_2246.field_10523, torch);
+            m.put(class_2246.field_10301, torch);
+            m.put(class_2246.field_10450, new Source(Family.REDSTONE, "Repeater"));
+            m.put(class_2246.field_10377, new Source(Family.REDSTONE, "Comparator"));
+            m.put(class_2246.field_10524, new Source(Family.REDSTONE, "Redstone Lamp"));
+            m.put(class_2246.field_10179, new Source(Family.REDSTONE, "Note Block"));
+            m.put(class_2246.field_22422, new Source(Family.REDSTONE, "Target Block"));
+            m.put(class_2246.field_10425, new Source(Family.REDSTONE, "Powered Rail"));
+            m.put(class_2246.field_10025, new Source(Family.REDSTONE, "Detector Rail"));
+            m.put(class_2246.field_10546, new Source(Family.REDSTONE, "Activator Rail"));
+            Source bulb = new Source(Family.REDSTONE, "Copper Bulb");
+            for (class_2248 b : new class_2248[]{
+                    class_2246.field_47072, class_2246.field_47073, class_2246.field_47074, class_2246.field_47075,
+                    class_2246.field_47076, class_2246.field_47077, class_2246.field_47078, class_2246.field_47079}) {
+                m.put(b, bulb);
+            }
+            Source sculk = new Source(Family.REDSTONE, "Sculk Sensor");
+            m.put(class_2246.field_28108, sculk);
+            m.put(class_2246.field_43231, sculk);
+            blockSources = m;
+        }
+        return blockSources;
+    }
+
+    private static Map<class_2591<?>, Source> stashSources() {
+        if (stashSources == null) {
+            Map<class_2591<?>, Source> m = new HashMap<>();
+            m.put(class_2591.field_11914, new Source(Family.CHEST, "Chest"));
+            m.put(class_2591.field_11891, new Source(Family.CHEST, "Trapped Chest"));
+            m.put(class_2591.field_16411, new Source(Family.CHEST, "Barrel"));
+            m.put(class_2591.field_11901, new Source(Family.CHEST, "Ender Chest"));
+            m.put(class_2591.field_11896, new Source(Family.SHULKER, "Shulker"));
+            m.put(class_2591.field_11888, new Source(Family.HOPPER, "Hopper"));
+            m.put(class_2591.field_11889, new Source(Family.SPAWNER, "Spawner"));
+            m.put(class_2591.field_11903, new Source(Family.SMELTER, "Furnace"));
+            m.put(class_2591.field_16415, new Source(Family.SMELTER, "Blast Furnace"));
+            m.put(class_2591.field_16414, new Source(Family.SMELTER, "Smoker"));
+            m.put(class_2591.field_11887, new Source(Family.DISPENSER, "Dispenser"));
+            m.put(class_2591.field_11899, new Source(Family.DISPENSER, "Dropper"));
+            m.put(class_2591.field_46808, new Source(Family.CRAFTER, "Crafter"));
+            m.put(class_2591.field_11894, new Source(Family.BASE, "Brewing Stand"));
+            m.put(class_2591.field_11890, new Source(Family.BASE, "Beacon"));
+            m.put(class_2591.field_11912, new Source(Family.BASE, "Enchanting Table"));
+            stashSources = m;
+        }
+        return stashSources;
+    }
+
+    /** How strongly a block says "somebody lives here". Shulkers never generate, so one is enough. */
+    private static int stashWeight(Family family) {
+        return switch (family) {
+            case SHULKER -> 1000;
+            case SPAWNER -> 3;
+            case HOPPER -> 2;
+            default -> 1;
+        };
+    }
 
     private static FarmFinder instance;
 
@@ -136,7 +245,17 @@ public class FarmFinder extends Module {
     private final BooleanSetting crafters = new BooleanSetting("Crafters", true);
     private final BooleanSetting redstone = new BooleanSetting("Redstone", true);
     private final BooleanSetting composters = new BooleanSetting("Composters", true);
+    private final BooleanSetting hoppers = new BooleanSetting("Hoppers", true);
+    private final BooleanSetting chests = new BooleanSetting("Chests", true);
+    private final BooleanSetting shulkers = new BooleanSetting("Shulkers", true);
+    private final BooleanSetting spawners = new BooleanSetting("Spawners", true);
+    private final BooleanSetting baseBlocks = new BooleanSetting("Base Blocks", true);
     private final BooleanSetting blockUpdates = new BooleanSetting("Block Updates", true);
+    private final BooleanSetting stashScan = new BooleanSetting("Stash Scan", true);
+    private final SliderSetting stashThreshold = new SliderSetting("Stash Threshold", 6.0, 1.0, 40.0, 0);
+    private final BooleanSetting densityFilter = new BooleanSetting("Density Filter", true);
+    private final SliderSetting densityRadius = new SliderSetting("Filter Radius (chunks)", 4.0, 1.0, 8.0, 0);
+    private final SliderSetting densityMin = new SliderSetting("Filter Min Blocks", 5.0, 2.0, 100.0, 0);
     private final SliderSetting cooldown = new SliderSetting("Cooldown (s)", 15.0, 1.0, 120.0, 0);
     private final SliderSetting clusterSize = new SliderSetting("Cluster Size", 16.0, 4.0, 64.0, 0);
     private final SliderSetting minDistance = new SliderSetting("Min Distance", 0.0, 0.0, 64.0, 0);
@@ -163,7 +282,23 @@ public class FarmFinder extends Module {
     private long lastRtpAt = 0L;
     private class_634 lastConnection = null;
 
-    private final Map<Long, Mark> marks = new HashMap<>();
+    /** Access-ordered, so when it is full the mark refreshed longest ago is the one dropped. */
+    private final Map<Long, Mark> marks = new LinkedHashMap<>(256, 0.75F, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<Long, Mark> eldest) {
+            return this.size() > MAX_MARKS;
+        }
+    };
+    /** Centres of stashes already announced this session. */
+    private final List<int[]> stashAlerts = new ArrayList<>();
+    private long lastStashScanAt = 0L;
+    private long lastStashSignature = 0L;
+    private int lastStashCount = -1;
+    private long lastStashScoreAt = 0L;
+    /** Block entities the last scan counted, as FarmRoute keys. */
+    private Set<Long> stashPositions = new HashSet<>();
+    /** Distinct detected blocks per chunk (FarmRoute key of cx, 0, cz), for the density filter. */
+    private final Map<Long, Integer> chunkCounts = new HashMap<>();
     private long lastMarkPruneAt = 0L;
     private Target target = null;
     private FarmRoute search = null;
@@ -202,7 +337,11 @@ public class FarmFinder extends Module {
         }
     }
 
-    private record Target(String label, int x, int y, int z) {}
+    private record Target(String label, int x, int y, int z, double foundAt) {}
+
+    private record Found(int x, int y, int z, Source source) {}
+
+    private record Stash(int x, int y, int z, String summary, int total, double distance) {}
 
     public FarmFinder() {
         super("FarmFinder", "Alerts when redstone farm parts fire nearby: pistons, observers, smelters and more.", Category.DONUT_SMP);
@@ -213,7 +352,17 @@ public class FarmFinder extends Module {
         this.addSetting(this.crafters);
         this.addSetting(this.redstone);
         this.addSetting(this.composters);
+        this.addSetting(this.hoppers);
+        this.addSetting(this.chests);
+        this.addSetting(this.shulkers);
+        this.addSetting(this.spawners);
+        this.addSetting(this.baseBlocks);
         this.addSetting(this.blockUpdates);
+        this.addSetting(this.stashScan);
+        this.addSetting(this.stashThreshold);
+        this.addSetting(this.densityFilter);
+        this.addSetting(this.densityRadius);
+        this.addSetting(this.densityMin);
         this.addSetting(this.cooldown);
         this.addSetting(this.clusterSize);
         this.addSetting(this.minDistance);
@@ -243,6 +392,7 @@ public class FarmFinder extends Module {
         this.marks.clear();
         this.clearTarget();
         this.arrivedAt = null;
+        this.resetStashes();
     }
 
     @Override
@@ -263,6 +413,7 @@ public class FarmFinder extends Module {
             this.marks.clear();
             this.clearTarget();
             this.arrivedAt = null;
+            this.resetStashes();
         }
 
         // A fresh connection means a rejoin - most likely after a kick, which is
@@ -293,6 +444,12 @@ public class FarmFinder extends Module {
             this.lastMarkPruneAt = now;
             long ttl = (long) (this.highlightTime.getValue() * 1000.0);
             this.marks.values().removeIf(m -> now - m.at > ttl);
+            this.rebuildDensity();
+        }
+
+        if (this.stashScan.isEnabled() && now - this.lastStashScanAt >= STASH_SCAN_MS) {
+            this.lastStashScanAt = now;
+            this.scanStashes();
         }
 
         this.tickRoute(now);
@@ -334,15 +491,8 @@ public class FarmFinder extends Module {
             return;
         }
 
-        Source source;
-        if (block == class_2246.field_10282) {
-            source = OBSERVER_SOURCE;
-        } else if (block == class_2246.field_10560 || block == class_2246.field_10615) {
-            source = PISTON_SOURCE;
-        } else {
-            return;
-        }
-        if (!this.familyEnabled(source.family())) {
+        Source source = blockSources().get(block);
+        if (source == null || !this.familyEnabled(source.family())) {
             return;
         }
         this.report(source, pos.method_10263() + 0.5, pos.method_10264() + 0.5, pos.method_10260() + 0.5);
@@ -357,6 +507,11 @@ public class FarmFinder extends Module {
             case CRAFTER -> this.crafters.isEnabled();
             case REDSTONE -> this.redstone.isEnabled();
             case COMPOSTER -> this.composters.isEnabled();
+            case HOPPER -> this.hoppers.isEnabled();
+            case CHEST -> this.chests.isEnabled();
+            case SHULKER -> this.shulkers.isEnabled();
+            case SPAWNER -> this.spawners.isEnabled();
+            case BASE -> this.baseBlocks.isEnabled();
         };
     }
 
@@ -380,26 +535,24 @@ public class FarmFinder extends Module {
             return;
         }
 
-        // Stop on detection itself, ahead of the cooldown and throttle below.
-        // Those only decide whether to announce it again; if they gated this, a
-        // spot that already alerted would let the next RTP carry us away from it.
-        if (this.autoRtp.isEnabled()) {
-            this.autoRtp.setEnabled(false);
-            this.say("§6[FarmFinder]§r §cAutoRTP stopped§r §7- " + source.label() + " "
-                    + (int) Math.round(distance) + "m " + compass(dx, dz)
-                    + " §8(" + (int) Math.floor(x) + ", " + (int) Math.floor(y) + ", " + (int) Math.floor(z) + ")");
-            if (Cyemer.getInstance().getModuleManager().getModule("Notifications") instanceof Notifications notifications) {
-                notifications.warn("AutoRTP stopped", source.label() + " detected");
-            }
-        }
-
-        // Highlighting and routing see every event, including the ones the
-        // cooldown below keeps out of chat.
         int bx = (int) Math.floor(x);
         int by = (int) Math.floor(y);
         int bz = (int) Math.floor(z);
+
+        // Highlighted whatever happens next: it also counts toward the density
+        // of every later find around it, including its own.
         this.mark(source.family(), bx, by, bz);
-        this.offerTarget(source, bx, by, bz, distance);
+        if (!this.passesDensity(bx, bz)) {
+            return;
+        }
+
+        // Stop on detection itself, ahead of the cooldown and throttle below.
+        // Those only decide whether to announce it again; if they gated this, a
+        // spot that already alerted would let the next RTP carry us away from it.
+        this.stopAutoRtp(source.label(), bx, by, bz, distance, dx, dz);
+        // Routing sees every event that passes, including the ones the
+        // cooldown below keeps out of chat.
+        this.offerTarget(source.label(), bx, by, bz, distance);
 
         int size = Math.max(1, (int) this.clusterSize.getValue());
         String key = source.family().name() + ":"
@@ -452,6 +605,260 @@ public class FarmFinder extends Module {
         }
     }
 
+    private void resetStashes() {
+        this.stashAlerts.clear();
+        this.lastStashSignature = 0L;
+        this.lastStashCount = -1;
+        this.stashPositions = new HashSet<>();
+        this.chunkCounts.clear();
+    }
+
+    /**
+     * Recounts detected blocks per chunk from scratch: recent activity marks
+     * and the last scan's block entities, each position once, so a hopper
+     * that both ticked and was scanned is not counted twice.
+     */
+    private void rebuildDensity() {
+        Set<Long> positions = new HashSet<>(this.stashPositions);
+        positions.addAll(this.marks.keySet());
+        this.chunkCounts.clear();
+        for (long pos : positions) {
+            this.chunkCounts.merge(FarmRoute.key(FarmRoute.unpackX(pos) >> 4, 0, FarmRoute.unpackZ(pos) >> 4), 1, Integer::sum);
+        }
+    }
+
+    /** Whether enough detected blocks lie within the filter radius of this one to count it. */
+    private boolean passesDensity(int x, int z) {
+        if (!this.densityFilter.isEnabled()) {
+            return true;
+        }
+        int radius = (int) this.densityRadius.getValue();
+        int needed = (int) this.densityMin.getValue();
+        int cx = x >> 4;
+        int cz = z >> 4;
+        int total = 0;
+        for (int ox = -radius; ox <= radius; ox++) {
+            for (int oz = -radius; oz <= radius; oz++) {
+                Integer count = this.chunkCounts.get(FarmRoute.key(cx + ox, 0, cz + oz));
+                if (count != null && (total += count) >= needed) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Reads every counted block entity in the loaded chunks, scores each one
+     * by the weighted blocks around it, and announces the densest spots not
+     * already announced. Scoring is skipped while the set of block entities
+     * is unchanged since the last pass, which is most passes.
+     */
+    private void scanStashes() {
+        class_746 self = this.mc.field_1724;
+        class_638 world = this.mc.field_1687;
+        if (self == null || world == null) {
+            return;
+        }
+        Map<class_2591<?>, Source> sources = stashSources();
+        List<Found> found = new ArrayList<>();
+        long signature = 0L;
+        int pcx = (int) Math.floor(self.method_23317()) >> 4;
+        int pcz = (int) Math.floor(self.method_23321()) >> 4;
+        for (int cx = pcx - STASH_SCAN_RADIUS; cx <= pcx + STASH_SCAN_RADIUS; cx++) {
+            for (int cz = pcz - STASH_SCAN_RADIUS; cz <= pcz + STASH_SCAN_RADIUS; cz++) {
+                if (!world.method_8393(cx, cz)) {
+                    continue;
+                }
+                class_2818 chunk = world.method_8497(cx, cz);
+                for (class_2586 entity : chunk.method_12214().values()) {
+                    Source source = sources.get(entity.method_11017());
+                    if (source == null || !this.familyEnabled(source.family())) {
+                        continue;
+                    }
+                    class_2338 pos = entity.method_11016();
+                    found.add(new Found(pos.method_10263(), pos.method_10264(), pos.method_10260(), source));
+                    // Order-independent, so iteration order cannot fake a change.
+                    signature += FarmRoute.key(pos.method_10263(), pos.method_10264(), pos.method_10260()) * 0x9E3779B97F4A7C15L
+                            + source.family().ordinal();
+                }
+            }
+        }
+
+        Set<Long> positions = new HashSet<>();
+        for (Found f : found) {
+            positions.add(FarmRoute.key(f.x(), f.y(), f.z()));
+        }
+        this.stashPositions = positions;
+        this.rebuildDensity();
+
+        // Rescore when the block entities change, and every 10 s regardless:
+        // activity alone can lift a spot over the density filter.
+        long now = System.currentTimeMillis();
+        if (signature != this.lastStashSignature || found.size() != this.lastStashCount
+                || (this.densityFilter.isEnabled() && now - this.lastStashScoreAt > 10_000L)) {
+            this.lastStashSignature = signature;
+            this.lastStashCount = found.size();
+            this.lastStashScoreAt = now;
+            this.scoreStashes(self, found);
+        }
+
+        // Members of announced stashes stay highlighted while they are loaded.
+        int reach = this.stashRadius() * 2;
+        for (Found f : found) {
+            for (int[] centre : this.stashAlerts) {
+                if (Math.abs(f.x() - centre[0]) <= reach && Math.abs(f.y() - centre[1]) <= reach && Math.abs(f.z() - centre[2]) <= reach) {
+                    this.mark(f.source().family(), f.x(), f.y(), f.z());
+                    break;
+                }
+            }
+        }
+    }
+
+    /** Half the cluster size: blocks this close to each other belong to one stash. */
+    private int stashRadius() {
+        return Math.max(4, (int) Math.round(this.clusterSize.getValue() / 2.0));
+    }
+
+    private void scoreStashes(class_746 self, List<Found> found) {
+        int r = this.stashRadius();
+        Map<Long, List<Found>> grid = new HashMap<>();
+        for (Found f : found) {
+            grid.computeIfAbsent(FarmRoute.key(Math.floorDiv(f.x(), r), Math.floorDiv(f.y(), r), Math.floorDiv(f.z(), r)),
+                    k -> new ArrayList<>()).add(f);
+        }
+
+        int n = found.size();
+        int[] scores = new int[n];
+        for (int i = 0; i < n; i++) {
+            scores[i] = this.neighbourhood(found.get(i), grid, r, null);
+        }
+        Integer[] order = new Integer[n];
+        for (int i = 0; i < n; i++) {
+            order[i] = i;
+        }
+        java.util.Arrays.sort(order, (a, b) -> Integer.compare(scores[b], scores[a]));
+
+        int threshold = (int) this.stashThreshold.getValue();
+        double px = self.method_23317();
+        double py = self.method_23318();
+        double pz = self.method_23321();
+        List<Stash> fresh = new ArrayList<>();
+        for (int idx : order) {
+            if (scores[idx] < threshold) {
+                break;
+            }
+            Found c = found.get(idx);
+            if (this.nearAnnounced(c.x(), c.y(), c.z(), r * 2)) {
+                continue;
+            }
+            double distance = Math.sqrt(distSq(c.x() + 0.5, c.y() + 0.5, c.z() + 0.5, px, py, pz));
+            if (distance < this.minDistance.getValue() || !this.passesDensity(c.x(), c.z())) {
+                continue; // not marked announced, so it can still qualify later
+            }
+            Map<String, Integer> counts = new HashMap<>();
+            int total = this.neighbourhood(c, grid, r, counts);
+            if (this.stashAlerts.size() >= 300) {
+                this.stashAlerts.remove(0);
+            }
+            this.stashAlerts.add(new int[]{c.x(), c.y(), c.z()});
+            fresh.add(new Stash(c.x(), c.y(), c.z(), summarize(counts), total, distance));
+        }
+        if (fresh.isEmpty()) {
+            return;
+        }
+
+        fresh.sort(Comparator.comparingDouble(Stash::distance));
+        Stash nearest = fresh.get(0);
+        double ndx = nearest.x() + 0.5 - px;
+        double ndz = nearest.z() + 0.5 - pz;
+        this.stopAutoRtp("Stash", nearest.x(), nearest.y(), nearest.z(), nearest.distance(), ndx, ndz);
+        this.offerTarget("Stash", nearest.x(), nearest.y(), nearest.z(), nearest.distance());
+        for (int i = 0; i < Math.min(STASH_ANNOUNCE_MAX, fresh.size()); i++) {
+            this.emitStash(fresh.get(i), px, pz, i == 0);
+        }
+        if (fresh.size() > STASH_ANNOUNCE_MAX) {
+            this.say("§6[FarmFinder]§r §d+" + (fresh.size() - STASH_ANNOUNCE_MAX) + " more stashes§r §7in range, highlighted");
+        }
+    }
+
+    /**
+     * Weighted count of counted blocks within r of f (a cube, f included).
+     * With counts given, also tallies each kind and returns the plain count.
+     */
+    private int neighbourhood(Found f, Map<Long, List<Found>> grid, int r, Map<String, Integer> counts) {
+        int gx = Math.floorDiv(f.x(), r);
+        int gy = Math.floorDiv(f.y(), r);
+        int gz = Math.floorDiv(f.z(), r);
+        int sum = 0;
+        for (int ox = -1; ox <= 1; ox++) {
+            for (int oy = -1; oy <= 1; oy++) {
+                for (int oz = -1; oz <= 1; oz++) {
+                    List<Found> cell = grid.get(FarmRoute.key(gx + ox, gy + oy, gz + oz));
+                    if (cell == null) {
+                        continue;
+                    }
+                    for (Found g : cell) {
+                        if (Math.abs(g.x() - f.x()) <= r && Math.abs(g.y() - f.y()) <= r && Math.abs(g.z() - f.z()) <= r) {
+                            if (counts != null) {
+                                counts.merge(g.source().label(), 1, Integer::sum);
+                                sum++;
+                            } else {
+                                sum += stashWeight(g.source().family());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return sum;
+    }
+
+    private boolean nearAnnounced(int x, int y, int z, int within) {
+        for (int[] c : this.stashAlerts) {
+            if (Math.abs(x - c[0]) <= within && Math.abs(y - c[1]) <= within && Math.abs(z - c[2]) <= within) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** "23 chests, 4 shulkers, 1 spawner", most numerous first. */
+    private static String summarize(Map<String, Integer> counts) {
+        List<Map.Entry<String, Integer>> entries = new ArrayList<>(counts.entrySet());
+        entries.sort((a, b) -> Integer.compare(b.getValue(), a.getValue()));
+        StringBuilder out = new StringBuilder();
+        for (Map.Entry<String, Integer> e : entries) {
+            if (out.length() > 0) {
+                out.append(", ");
+            }
+            String name = e.getKey().toLowerCase();
+            out.append(e.getValue()).append(' ').append(e.getValue() == 1 ? name : name + "s");
+        }
+        return out.toString();
+    }
+
+    private void emitStash(Stash stash, double px, double pz, boolean withPing) {
+        double dx = stash.x() + 0.5 - px;
+        double dz = stash.z() + 0.5 - pz;
+        int distance = (int) Math.round(stash.distance());
+        String direction = compass(dx, dz);
+        if (this.chat.isEnabled()) {
+            this.say("§6[FarmFinder]§r §dStash§r §7" + distance + "m " + direction
+                    + "§r §8(" + stash.x() + ", " + stash.y() + ", " + stash.z() + ")§r §7- " + stash.summary());
+        }
+        if (this.toast.isEnabled()
+                && Cyemer.getInstance().getModuleManager().getModule("Notifications") instanceof Notifications notifications) {
+            notifications.info("Farm Finder", "Stash · " + stash.total() + " blocks · " + distance + "m " + direction);
+        }
+        if (withPing && this.ping.isEnabled()) {
+            class_1144 manager = this.mc.method_1483();
+            if (manager != null) {
+                manager.method_4873(class_1109.method_47978(class_3417.field_14622, 1.6F));
+            }
+        }
+    }
+
     private void mark(Family family, int x, int y, int z) {
         long now = System.currentTimeMillis();
         long key = FarmRoute.key(x, y, z);
@@ -461,26 +868,20 @@ public class FarmFinder extends Module {
             mark.family = family;
             return;
         }
-        if (this.marks.size() >= MAX_MARKS) {
-            Long oldest = null;
-            long oldestAt = Long.MAX_VALUE;
-            for (Map.Entry<Long, Mark> entry : this.marks.entrySet()) {
-                if (entry.getValue().at < oldestAt) {
-                    oldestAt = entry.getValue().at;
-                    oldest = entry.getKey();
-                }
-            }
-            this.marks.remove(oldest);
-        }
         this.marks.put(key, new Mark(x, y, z, family, now));
+        if (!this.stashPositions.contains(key)) {
+            this.chunkCounts.merge(FarmRoute.key(x >> 4, 0, z >> 4), 1, Integer::sum);
+        }
     }
 
     /**
      * The first find becomes the route target and keeps it until we arrive,
-     * so a busy farm firing all over cannot keep re-planning under us. A
-     * target left far behind (we RTP'd on) gives way to the new find.
+     * so a busy farm firing all over cannot keep re-planning under us. Only a
+     * find at under half the distance takes over, so with detection reaching
+     * the whole render distance the route still ends up on the nearest base
+     * after a few switches at most.
      */
-    private void offerTarget(Source source, int x, int y, int z, double distance) {
+    private void offerTarget(String label, int x, int y, int z, double distance) {
         if (!this.route.isEnabled() || distance < ARRIVE_DISTANCE + 4.0) {
             return;
         }
@@ -488,13 +889,28 @@ public class FarmFinder extends Module {
             return;
         }
         class_746 self = this.mc.field_1724;
-        if (this.target != null && self != null
-                && distSq(this.target.x(), this.target.y(), this.target.z(), self.method_23317(), self.method_23318(), self.method_23321()) < 192.0 * 192.0) {
-            return;
+        if (this.target != null && self != null) {
+            double current = Math.sqrt(distSq(this.target.x(), this.target.y(), this.target.z(),
+                    self.method_23317(), self.method_23318(), self.method_23321()));
+            if (distance >= current * 0.5) {
+                return;
+            }
         }
         this.clearTarget();
-        this.target = new Target(source.label(), x, y, z);
+        this.target = new Target(label, x, y, z, distance);
         this.plan();
+    }
+
+    private void stopAutoRtp(String label, int x, int y, int z, double distance, double dx, double dz) {
+        if (!this.autoRtp.isEnabled()) {
+            return;
+        }
+        this.autoRtp.setEnabled(false);
+        this.say("§6[FarmFinder]§r §cAutoRTP stopped§r §7- " + label + " "
+                + (int) Math.round(distance) + "m " + compass(dx, dz) + " §8(" + x + ", " + y + ", " + z + ")");
+        if (Cyemer.getInstance().getModuleManager().getModule("Notifications") instanceof Notifications notifications) {
+            notifications.warn("AutoRTP stopped", label + " detected");
+        }
     }
 
     private void clearTarget() {
@@ -546,8 +962,8 @@ public class FarmFinder extends Module {
 
         class_243 eye = self.method_33571();
         double distance = Math.sqrt(distSq(t.x(), t.y(), t.z(), eye.field_1352 - 0.5, eye.field_1351 - 0.5, eye.field_1350 - 0.5));
-        if (distance > TARGET_DROP_DISTANCE) {
-            this.clearTarget();
+        if (distance > t.foundAt() + TARGET_DROP_SLACK) {
+            this.clearTarget(); // teleported away from it
             return;
         }
         if (distance <= ARRIVE_DISTANCE) {
