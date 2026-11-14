@@ -246,7 +246,14 @@ public class RenderUtils {
     }
 
     public static void drawLine(class_4587 matrices, class_4597 vertexConsumers, class_243 start, class_243 end, Color color, float alpha) {
-        class_4588 buffer = vertexConsumers.method_73477(RenderTypes.LINES);
+        drawLine(matrices, vertexConsumers, start, end, color, alpha, false);
+    }
+
+    /** seeThrough draws over terrain instead of being hidden behind it. */
+    public static void drawLine(
+        class_4587 matrices, class_4597 vertexConsumers, class_243 start, class_243 end, Color color, float alpha, boolean seeThrough
+    ) {
+        class_4588 buffer = vertexConsumers.method_73477(seeThrough ? RenderTypes.LINES_NO_DEPTH : RenderTypes.LINES);
         Matrix4f matrix = matrices.method_23760().method_23761();
         float r = color.getRed() / 255.0F;
         float g = color.getGreen() / 255.0F;
