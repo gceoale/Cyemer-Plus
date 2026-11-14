@@ -9,6 +9,7 @@
     "ClientPlayerInteractionManagerMixin",
     "ClientPlayerInteractionManagerMixin$ClientPlayerInteractionManagerAccessor",
     "ClientPlayNetworkHandlerMixin",
+    "ClientWorldMixin",
     "GameRendererMixin",
     "HandledScreenAccessor",
     "HandledScreenInterface",

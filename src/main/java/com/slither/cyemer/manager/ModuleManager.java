@@ -43,6 +43,7 @@ import com.slither.cyemer.module.implementation.Watermark;
 import com.slither.cyemer.module.implementation.WebBreaker;
 import com.slither.cyemer.module.implementation.WindChargeKey;
 import com.slither.cyemer.module.implementation.combat.AimAssist;
+import com.slither.cyemer.module.implementation.donutsmp.FarmFinder;
 import com.slither.cyemer.module.implementation.combat.AnchorMacro;
 import com.slither.cyemer.module.implementation.combat.AntiDivebomb;
 import com.slither.cyemer.module.implementation.combat.AutoAnchor;
@@ -163,6 +164,7 @@ public class ModuleManager {
         this.modules.add(new StreamProof());
         this.modules.add(new LagReach());
         this.modules.add(new Scaffold());
+        this.modules.add(new FarmFinder());
         this.modules.add(new WindChargeHitter());
         this.modules.add(new PearlChaser());
         this.modules.add(new TotemHit());

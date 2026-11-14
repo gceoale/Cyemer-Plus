@@ -10,7 +10,9 @@ public enum Category {
     RENDER("Render"),
     PLAYER("Player"),
     MISC("Misc"),
-    CLIENT("Client");
+    CLIENT("Client"),
+    // Appended rather than slotted in, so no existing category's ordinal moves.
+    DONUT_SMP("Donut SMP");
 
     public final String name;
 

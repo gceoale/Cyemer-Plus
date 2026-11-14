@@ -139,6 +139,29 @@ public class ClickGUIRenderer {
             );
     }
 
+    /**
+     * Text drawn in place of a category icon that is not available. A single
+     * word keeps the old first-three-letters behaviour, so every existing
+     * category looks exactly as before. Several words collapse to initials,
+     * with an all-caps word kept whole since it is already an abbreviation -
+     * "Donut SMP" reads "DSMP" rather than "Don".
+     */
+    private static String iconFallbackLabel(String name) {
+        String[] words = name.trim().split("\\s+");
+        if (words.length < 2) {
+            return name.substring(0, Math.min(3, name.length()));
+        }
+        StringBuilder label = new StringBuilder();
+        for (String word : words) {
+            if (word.isEmpty()) {
+                continue;
+            }
+            boolean abbreviation = word.length() > 1 && word.equals(word.toUpperCase());
+            label.append(abbreviation ? word : String.valueOf(Character.toUpperCase(word.charAt(0))));
+        }
+        return label.toString();
+    }
+
     private void drawIconOrLabel(class_332 ctx, int iconId, String name, double ix, double iy, double alpha) {
         if (iconId != -1) {
             float s = (float)Math.round(17.28);
@@ -146,7 +169,7 @@ public class ClickGUIRenderer {
             float dy = (float)Math.round(iy + (36.0 - s) / 2.0);
             Renderer.get().drawTexture(ctx, iconId, dx, dy, s, s, 0.0F, 0.0F, 64.0F, 64.0F, 64.0F, 64.0F);
         } else {
-            String label = name.substring(0, Math.min(3, name.length()));
+            String label = iconFallbackLabel(name);
             float tw = Renderer.get().getTextWidth(label, 9.0F);
             float th = Renderer.get().getTextHeight(9.0F);
             Renderer.get()
@@ -718,7 +741,7 @@ public class ClickGUIRenderer {
                         64.0F
                     );
             } else {
-                String label = btn.module.getCategory().name.substring(0, Math.min(3, btn.module.getCategory().name.length()));
+                String label = iconFallbackLabel(btn.module.getCategory().name);
                 float lw = Renderer.get().getTextWidth(label, 8.5F);
                 float lh = Renderer.get().getTextHeight(8.5F);
                 Renderer.get().drawText(ctx, label, bx + (bs - lw) / 2.0F, by + (bs - lh) / 2.0F, 8.5F, new Color(255, 255, 255, (int)(220.0 * alpha)), false);
