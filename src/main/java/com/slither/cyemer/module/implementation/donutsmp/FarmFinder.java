@@ -5,6 +5,7 @@ import com.slither.cyemer.module.BooleanSetting;
 import com.slither.cyemer.module.Category;
 import com.slither.cyemer.module.Module;
 import com.slither.cyemer.module.SliderSetting;
+import com.slither.cyemer.module.StringSetting;
 import com.slither.cyemer.module.implementation.Notifications;
 import java.util.HashMap;
 import java.util.Map;
@@ -22,6 +23,7 @@ import net.minecraft.class_2561;
 import net.minecraft.class_2680;
 import net.minecraft.class_2960;
 import net.minecraft.class_3417;
+import net.minecraft.class_634;
 import net.minecraft.class_746;
 
 /**
@@ -101,6 +103,9 @@ public class FarmFinder extends Module {
     private final BooleanSetting chat = new BooleanSetting("Chat", true);
     private final BooleanSetting toast = new BooleanSetting("Toast", true);
     private final BooleanSetting ping = new BooleanSetting("Ping", true);
+    private final BooleanSetting autoRtp = new BooleanSetting("AutoRTP", false);
+    private final SliderSetting rtpInterval = new SliderSetting("RTP Interval (s)", 0.5, 0.5, 30.0, 1);
+    private final StringSetting rtpCommand = new StringSetting("RTP Command", "/rtp");
 
     private final class_1145 soundListener = (sound, soundSet, range) -> this.onSound(sound);
     private class_1144 registeredWith = null;
@@ -109,6 +114,8 @@ public class FarmFinder extends Module {
     private long lastAnyAlertAt = 0L;
     private long lastPruneAt = 0L;
     private class_1937 lastWorld = null;
+    private long lastRtpAt = 0L;
+    private class_634 lastConnection = null;
 
     private static final class Cluster {
         long lastAlertAt = 0L;
@@ -132,6 +139,9 @@ public class FarmFinder extends Module {
         this.addSetting(this.chat);
         this.addSetting(this.toast);
         this.addSetting(this.ping);
+        this.addSetting(this.autoRtp);
+        this.addSetting(this.rtpInterval);
+        this.addSetting(this.rtpCommand);
         instance = this;
     }
 
@@ -162,7 +172,25 @@ public class FarmFinder extends Module {
             this.clusters.clear();
         }
 
+        // A fresh connection means a rejoin - most likely after a kick, which is
+        // exactly when resuming the command spam would get us kicked again. A
+        // dimension change keeps the same connection, so RTPing into another
+        // dimension does not trip this.
+        class_634 connection = this.mc.method_1562();
+        if (connection != this.lastConnection) {
+            if (this.lastConnection != null && this.autoRtp.isEnabled()) {
+                this.autoRtp.setEnabled(false);
+                this.say("§6[FarmFinder]§r §cAutoRTP off§r §7- reconnected");
+            }
+            this.lastConnection = connection;
+        }
+
         long now = System.currentTimeMillis();
+        if (this.autoRtp.isEnabled() && now - this.lastRtpAt >= (long) (this.rtpInterval.getValue() * 1000.0)) {
+            this.lastRtpAt = now;
+            this.sendRtp();
+        }
+
         if (now - this.lastPruneAt > 30_000L) {
             this.lastPruneAt = now;
             this.clusters.values().removeIf(c -> now - c.lastSeenAt > CLUSTER_TTL_MS);
@@ -251,6 +279,19 @@ public class FarmFinder extends Module {
             return;
         }
 
+        // Stop on detection itself, ahead of the cooldown and throttle below.
+        // Those only decide whether to announce it again; if they gated this, a
+        // spot that already alerted would let the next RTP carry us away from it.
+        if (this.autoRtp.isEnabled()) {
+            this.autoRtp.setEnabled(false);
+            this.say("§6[FarmFinder]§r §cAutoRTP stopped§r §7- " + source.label() + " "
+                    + (int) Math.round(distance) + "m " + compass(dx, dz)
+                    + " §8(" + (int) Math.floor(x) + ", " + (int) Math.floor(y) + ", " + (int) Math.floor(z) + ")");
+            if (Cyemer.getInstance().getModuleManager().getModule("Notifications") instanceof Notifications notifications) {
+                notifications.warn("AutoRTP stopped", source.label() + " detected");
+            }
+        }
+
         int size = Math.max(1, (int) this.clusterSize.getValue());
         String key = source.family().name() + ":"
                 + Math.floorDiv((int) Math.floor(x), size) + ":"
@@ -299,6 +340,32 @@ public class FarmFinder extends Module {
             if (manager != null) {
                 manager.method_4873(class_1109.method_47978(class_3417.field_14622, 1.6F));
             }
+        }
+    }
+
+    /**
+     * Sent as a command, not chat. A message starting with a slash that goes
+     * through the chat path is posted to chat as literal text; the chat screen
+     * strips the slash and routes commands through method_45730 instead, so
+     * this does the same. Accepts the setting with or without its slash.
+     */
+    private void sendRtp() {
+        if (this.mc.field_1724 == null || this.mc.field_1724.field_3944 == null) {
+            return;
+        }
+        String command = this.rtpCommand.getValue() == null ? "" : this.rtpCommand.getValue().trim();
+        while (command.startsWith("/")) {
+            command = command.substring(1);
+        }
+        if (command.isEmpty()) {
+            return;
+        }
+        this.mc.field_1724.field_3944.method_45730(command);
+    }
+
+    private void say(String message) {
+        if (this.mc.field_1724 != null) {
+            this.mc.field_1724.method_7353(class_2561.method_43470(message), false);
         }
     }
 
