@@ -2,6 +2,7 @@ package com.slither.cyemer.mixin;
 
 import com.slither.cyemer.Cyemer;
 import com.slither.cyemer.module.implementation.donutsmp.FarmFinder;
+import com.slither.cyemer.module.implementation.render.BlockESP;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.class_2338;
@@ -38,6 +39,10 @@ public class ClientWorldMixin {
         if (finder != null && finder.isEnabled()) {
             class_638 world = (class_638)(Object)this;
             finder.onBlockUpdate(pos, world.method_8320(pos), state);
+        }
+        BlockESP esp = BlockESP.getInstance();
+        if (esp != null && esp.isEnabled()) {
+            esp.onBlockUpdate(pos, state);
         }
     }
 }

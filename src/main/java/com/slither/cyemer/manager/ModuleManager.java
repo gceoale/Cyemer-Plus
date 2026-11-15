@@ -74,6 +74,7 @@ import com.slither.cyemer.module.implementation.combat.WindChargeHitter;
 import com.slither.cyemer.module.implementation.combat.XbowCart;
 import com.slither.cyemer.module.implementation.movement.SafeWalk;
 import com.slither.cyemer.module.implementation.movement.SnapTap;
+import com.slither.cyemer.module.implementation.render.BlockESP;
 import com.slither.cyemer.module.implementation.render.Effectesp;
 import com.slither.cyemer.module.implementation.render.HandCham;
 import com.slither.cyemer.module.implementation.render.Nametags;
@@ -168,6 +169,7 @@ public class ModuleManager {
         this.modules.add(new WindChargeHitter());
         this.modules.add(new PearlChaser());
         this.modules.add(new TotemHit());
+        this.modules.add(new BlockESP());
     }
 
     public void onTick() {

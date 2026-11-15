@@ -1,5 +1,6 @@
 package com.slither.cyemer.gui.new_ui.old;
 
+import com.slither.cyemer.gui.new_ui.settings.BlockListComponent;
 import com.slither.cyemer.gui.new_ui.settings.BooleanComponent;
 import com.slither.cyemer.gui.new_ui.settings.ColorComponent;
 import com.slither.cyemer.gui.new_ui.settings.KeybindComponent;
@@ -7,6 +8,7 @@ import com.slither.cyemer.gui.new_ui.settings.ModeComponent;
 import com.slither.cyemer.gui.new_ui.settings.SettingComponent;
 import com.slither.cyemer.gui.new_ui.settings.SliderComponent;
 import com.slither.cyemer.gui.new_ui.settings.StringComponent;
+import com.slither.cyemer.module.BlockListSetting;
 import com.slither.cyemer.module.BooleanSetting;
 import com.slither.cyemer.module.ColorSetting;
 import com.slither.cyemer.module.ModeSetting;
@@ -51,6 +53,8 @@ public class ModuleButton {
                 this.components.add(new SliderComponent(ss));
             } else if (s instanceof ColorSetting cs) {
                 this.components.add(new ColorComponent(cs));
+            } else if (s instanceof BlockListSetting bls) {
+                this.components.add(new BlockListComponent(bls));
             } else if (s instanceof StringSetting sts) {
                 this.components.add(new StringComponent(sts));
             } else if (s instanceof KeybindSetting ks) {
