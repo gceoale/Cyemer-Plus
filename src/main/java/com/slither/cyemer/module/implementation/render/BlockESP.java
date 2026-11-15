@@ -5,14 +5,19 @@ import com.slither.cyemer.module.BlockListSetting;
 import com.slither.cyemer.module.BooleanSetting;
 import com.slither.cyemer.module.Category;
 import com.slither.cyemer.module.ColorSetting;
+import com.slither.cyemer.module.ModeSetting;
 import com.slither.cyemer.module.Module;
 import com.slither.cyemer.module.SliderSetting;
+import com.slither.cyemer.module.StringSetting;
 import com.slither.cyemer.util.render.RenderUtils;
+import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import java.awt.Color;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -49,6 +54,12 @@ import net.minecraft.class_9799;
  * first, a couple of milliseconds per tick, and rescanned when they reload;
  * single block changes arrive through ClientWorldMixin, so an anchor that
  * is placed, charged or blown up updates at once.
+ *
+ * DonutSMP Bypass mode adds ore the server hides with anti-xray: OreSim
+ * reruns the world generator's ore placement from the seed for every loaded
+ * chunk and draws where picked ores generated, fainter than ore the client
+ * can actually see. A prediction is dropped once its block is mined out or
+ * is something no ore could sit in.
  */
 @Environment(EnvType.CLIENT)
 public class BlockESP extends Module {
@@ -60,6 +71,10 @@ public class BlockESP extends Module {
     private static BlockESP instance;
 
     private final BlockListSetting blocks = new BlockListSetting("Blocks", "minecraft:respawn_anchor");
+    private final ModeSetting mode = new ModeSetting("Mode", "Normal", "DonutSMP Bypass");
+    private final StringSetting seed = new StringSetting("Seed", "6608149111735331168");
+    /** A button: turning it on runs one check, prints it and turns itself back off. */
+    private final BooleanSetting accuracyCheck = new BooleanSetting("Accuracy Check", false);
     private final ColorSetting color = new ColorSetting("Color", new Color(170, 60, 255));
     private final SliderSetting opacity = new SliderSetting("Opacity", 0.45, 0.1, 1.0, 2);
     private final BooleanSetting tracers = new BooleanSetting("Tracers", false);
@@ -72,6 +87,14 @@ public class BlockESP extends Module {
     private final Map<Long, class_2818> scanned = new HashMap<>();
     private final ArrayDeque<long[]> queue = new ArrayDeque<>();
     private long[] shown = new long[0];
+    /** Predicted ore per decorating chunk (an entry, even empty, means that chunk is done). */
+    private final Map<Long, Long2ObjectOpenHashMap<OreSim.Spec>> predicted = new HashMap<>();
+    private final ArrayDeque<long[]> simQueue = new ArrayDeque<>();
+    private long[] shownPredicted = new long[0];
+    private String seenMode = null;
+    private String seenSeed = null;
+    private String lastStatus = null;
+    private boolean predictionBroken = false;
     private class_1937 lastWorld = null;
     private int seenVersion = -1;
     private int ticks = 0;
@@ -88,6 +111,9 @@ public class BlockESP extends Module {
     public BlockESP() {
         super("BlockESP", "Highlights chosen blocks through walls across your render distance.", Category.RENDER);
         this.addSetting(this.blocks);
+        this.addSetting(this.mode);
+        this.addSetting(this.seed);
+        this.addSetting(this.accuracyCheck);
         this.addSetting(this.color);
         this.addSetting(this.opacity);
         this.addSetting(this.tracers);
@@ -115,6 +141,9 @@ public class BlockESP extends Module {
         this.scanned.clear();
         this.queue.clear();
         this.shown = new long[0];
+        this.predicted.clear();
+        this.simQueue.clear();
+        this.shownPredicted = new long[0];
         this.pendingNew = 0;
         this.pendingKinds.clear();
         this.pendingNearestSq = Double.MAX_VALUE;
@@ -134,8 +163,14 @@ public class BlockESP extends Module {
             this.reset();
         }
         int version = this.blocks.getVersion();
-        if (version != this.seenVersion) {
+        String modeNow = this.mode.getCurrentMode();
+        String seedNow = this.seed.getValue();
+        if (version != this.seenVersion || !modeNow.equals(this.seenMode) || !java.util.Objects.equals(seedNow, this.seenSeed)) {
             this.seenVersion = version;
+            this.seenMode = modeNow;
+            this.seenSeed = seedNow;
+            this.lastStatus = null;
+            this.predictionBroken = false;
             this.reset();
         }
         Set<class_2248> targets = this.blocks.getBlocks();
@@ -167,6 +202,21 @@ public class BlockESP extends Module {
         if (this.scanning && this.queue.isEmpty()) {
             this.scanning = false;
             this.initialPass = false;
+        }
+
+        if (this.mode.getCurrentMode().equals("DonutSMP Bypass") && !this.predictionBroken) {
+            // onTick is not guarded by the module manager, so a surprise here
+            // must stop the prediction, never the game.
+            try {
+                this.tickPrediction(world, self, targets, deadline);
+            } catch (Throwable t) {
+                this.predictionBroken = true;
+                this.status("§cPrediction stopped:§r §7" + t);
+            }
+        }
+        if (this.accuracyCheck.isEnabled()) {
+            this.accuracyCheck.setEnabled(false);
+            this.reportAccuracy(world);
         }
 
         if (this.ticks % 5 == 0) {
@@ -206,6 +256,137 @@ public class BlockESP extends Module {
             if (!world.method_8393(cx, cz) || world.method_8497(cx, cz) != entry.getValue()) {
                 it.remove();
                 this.found.remove(key);
+            }
+        }
+        this.predicted.keySet().removeIf(key -> !world.method_8393((int) (key >> 32), (int) (long) key));
+    }
+
+    /**
+     * Seed prediction: once the worldgen data has loaded, simulates every
+     * loaded chunk not yet done, nearest first, in whatever is left of this
+     * tick's budget after the block scan.
+     */
+    private void tickPrediction(class_638 world, class_746 self, Set<class_2248> targets, long deadline) {
+        long worldSeed;
+        try {
+            worldSeed = Long.parseLong(this.seed.getValue().trim());
+        } catch (NumberFormatException e) {
+            this.status("§cSeed is not a number§r §7- set it in BlockESP's settings");
+            return;
+        }
+        OreSim.Dimension dim = OreSim.get(world.method_27983());
+        if (dim == null) {
+            if (OreSim.isLoading()) {
+                this.status("§7Loading seed data...");
+            } else if (OreSim.error() != null) {
+                this.status("§cSeed data failed to load:§r §7" + OreSim.error());
+            }
+            return;
+        }
+        Set<class_2248> wanted = new HashSet<>(targets);
+        wanted.retainAll(dim.ores);
+        if (wanted.isEmpty()) {
+            this.status("§7None of the picked blocks generate as ore here, so nothing to predict");
+            return;
+        }
+        this.status("§aPredicting " + wanted.size() + " ore type" + (wanted.size() == 1 ? "" : "s") + " from the seed");
+
+        if (this.simQueue.isEmpty() && this.ticks % 10 == 0) {
+            int pcx = (int) Math.floor(self.method_23317()) >> 4;
+            int pcz = (int) Math.floor(self.method_23321()) >> 4;
+            List<long[]> todo = new ArrayList<>();
+            for (int cx = pcx - SCAN_RADIUS; cx <= pcx + SCAN_RADIUS; cx++) {
+                for (int cz = pcz - SCAN_RADIUS; cz <= pcz + SCAN_RADIUS; cz++) {
+                    if (world.method_8393(cx, cz) && !this.predicted.containsKey(chunkKey(cx, cz))) {
+                        int dx = cx - pcx;
+                        int dz = cz - pcz;
+                        todo.add(new long[]{cx, cz, (long) dx * dx + (long) dz * dz});
+                    }
+                }
+            }
+            todo.sort((a, b) -> Long.compare(a[2], b[2]));
+            this.simQueue.addAll(todo);
+        }
+        while (!this.simQueue.isEmpty() && System.nanoTime() < deadline) {
+            long[] next = this.simQueue.poll();
+            int cx = (int) next[0];
+            int cz = (int) next[1];
+            if (world.method_8393(cx, cz)) {
+                this.predicted.put(chunkKey(cx, cz), OreSim.simulate(world, dim, worldSeed, cx, cz, wanted));
+            }
+        }
+    }
+
+    /**
+     * Grades the predictions against what the client can see. Anti-xray only
+     * hides ore fully enclosed by blocks, so a prediction touching air is
+     * shown honestly: either the ore is there or it is not. In singleplayer
+     * nothing is hidden, so every prediction counts.
+     */
+    private void reportAccuracy(class_638 world) {
+        if (!this.mode.getCurrentMode().equals("DonutSMP Bypass")) {
+            this.say("§7Accuracy Check needs Mode set to DonutSMP Bypass");
+            return;
+        }
+        int hits = 0;
+        int misses = 0;
+        int exposedHits = 0;
+        int exposedMisses = 0;
+        class_2338.class_2339 probe = new class_2338.class_2339();
+        for (Long2ObjectOpenHashMap<OreSim.Spec> chunk : this.predicted.values()) {
+            for (Long2ObjectMap.Entry<OreSim.Spec> entry : chunk.long2ObjectEntrySet()) {
+                long pos = entry.getLongKey();
+                int x = unpackX(pos);
+                int y = unpackY(pos);
+                int z = unpackZ(pos);
+                if (!world.method_8393(x >> 4, z >> 4)) {
+                    continue;
+                }
+                class_2680 state = world.method_8320(probe.method_10103(x, y, z));
+                boolean hit = entry.getValue().produces.contains(state.method_26204());
+                if (!hit && !entry.getValue().couldHold(state)) {
+                    continue; // mined or built over since: says nothing either way
+                }
+                boolean exposed = false;
+                for (int[] o : new int[][]{{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}}) {
+                    if (world.method_8320(probe.method_10103(x + o[0], y + o[1], z + o[2])).method_26215()) {
+                        exposed = true;
+                        break;
+                    }
+                }
+                if (hit) {
+                    hits++;
+                    if (exposed) {
+                        exposedHits++;
+                    }
+                } else {
+                    misses++;
+                    if (exposed) {
+                        exposedMisses++;
+                    }
+                }
+            }
+        }
+        int exposed = exposedHits + exposedMisses;
+        this.say("§eAccuracy§r §7- touching air: §f" + exposedHits + "/" + exposed
+                + (exposed > 0 ? " (" + Math.round(100.0 * exposedHits / exposed) + "%)" : "")
+                + "§7 · all: §f" + hits + "/" + (hits + misses)
+                + (hits + misses > 0 ? " (" + Math.round(100.0 * hits / (hits + misses)) + "%)" : "")
+                + "§7 · on a server with anti-xray only the first number means anything");
+    }
+
+    private void say(String message) {
+        if (this.mc.field_1724 != null) {
+            this.mc.field_1724.method_7353(class_2561.method_43470("§5[BlockESP]§r " + message), false);
+        }
+    }
+
+    /** Says each distinct state of the prediction once, rather than every tick. */
+    private void status(String message) {
+        if (!message.equals(this.lastStatus)) {
+            this.lastStatus = message;
+            if (this.mc.field_1724 != null) {
+                this.mc.field_1724.method_7353(class_2561.method_43470("§5[BlockESP]§r " + message), false);
             }
         }
     }
@@ -304,6 +485,48 @@ public class BlockESP extends Module {
             next[i++] = entry.pos();
         }
         this.shown = next;
+
+        if (this.predicted.isEmpty() || !this.mode.getCurrentMode().equals("DonutSMP Bypass")) {
+            this.shownPredicted = new long[0];
+            return;
+        }
+        class_638 world = this.mc.field_1687;
+        PriorityQueue<Near> guesses = new PriorityQueue<>((a, b) -> Double.compare(b.distSq(), a.distSq()));
+        class_2338.class_2339 probe = new class_2338.class_2339();
+        for (Long2ObjectOpenHashMap<OreSim.Spec> chunk : this.predicted.values()) {
+            for (Long2ObjectMap.Entry<OreSim.Spec> entry : chunk.long2ObjectEntrySet()) {
+                long pos = entry.getLongKey();
+                int x = unpackX(pos);
+                int y = unpackY(pos);
+                int z = unpackZ(pos);
+                double dx = x + 0.5 - px;
+                double dy = y + 0.5 - py;
+                double dz = z + 0.5 - pz;
+                double d = dx * dx + dy * dy + dz * dz;
+                if (guesses.size() >= limit && d >= guesses.peek().distSq()) {
+                    continue;
+                }
+                // Only candidates that would make the cut are checked against the world.
+                LongOpenHashSet real = this.found.get(chunkKey(x >> 4, z >> 4));
+                if (real != null && real.contains(pos)) {
+                    continue; // visible for real, already drawn at full strength
+                }
+                if (world == null || !world.method_8393(x >> 4, z >> 4)
+                        || !entry.getValue().couldHold(world.method_8320(probe.method_10103(x, y, z)))) {
+                    continue; // mined out, or not something ore could be in
+                }
+                if (guesses.size() >= limit) {
+                    guesses.poll();
+                }
+                guesses.add(new Near(pos, d));
+            }
+        }
+        long[] predictedNext = new long[guesses.size()];
+        int j = 0;
+        for (Near entry : guesses) {
+            predictedNext[j++] = entry.pos();
+        }
+        this.shownPredicted = predictedNext;
     }
 
     private void noteNew(long pos, class_2248 block, class_746 self) {
@@ -352,8 +575,9 @@ public class BlockESP extends Module {
     @Override
     public void onWorldRender(class_4587 matrices, float tickDelta) {
         long[] list = this.shown;
+        long[] guesses = this.shownPredicted;
         class_746 self = this.mc.field_1724;
-        if (list.length == 0 || self == null || Cyemer.selfDestructed) {
+        if ((list.length == 0 && guesses.length == 0) || self == null || Cyemer.selfDestructed) {
             return;
         }
         class_243 cam = this.mc.field_1773.method_19418().method_71156();
@@ -379,6 +603,16 @@ public class BlockESP extends Module {
                     RenderUtils.drawLine(matrices, consumers, start, new class_243(x + 0.5, y + 0.5, z + 0.5), c, 0.8F, true);
                 }
             }
+            for (long pos : guesses) {
+                double x = unpackX(pos) - cx;
+                double y = unpackY(pos) - cy;
+                double z = unpackZ(pos) - cz;
+                RenderUtils.drawBoxEsp(matrices, consumers,
+                        new class_238(x + 0.06, y + 0.06, z + 0.06, x + 0.94, y + 0.94, z + 0.94), c, alpha * 0.6F, true);
+                if (lines) {
+                    RenderUtils.drawLine(matrices, consumers, start, new class_243(x + 0.5, y + 0.5, z + 0.5), c, 0.45F, true);
+                }
+            }
             consumers.method_22993();
         }
     }
@@ -390,19 +624,19 @@ public class BlockESP extends Module {
     }
 
     /** x in the top 26 bits, z in the next 26, y in the low 12; all signed. */
-    private static long pack(int x, int y, int z) {
+    static long pack(int x, int y, int z) {
         return ((long) (x & 0x3FFFFFF) << 38) | ((long) (z & 0x3FFFFFF) << 12) | (y & 0xFFF);
     }
 
-    private static int unpackX(long k) {
+    static int unpackX(long k) {
         return (int) (k >> 38);
     }
 
-    private static int unpackZ(long k) {
+    static int unpackZ(long k) {
         return (int) ((k << 26) >> 38);
     }
 
-    private static int unpackY(long k) {
+    static int unpackY(long k) {
         return (int) ((k << 52) >> 52);
     }
 
