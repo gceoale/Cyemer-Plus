@@ -33,6 +33,9 @@ public final class OverlayWindow {
 
     public boolean create(long parentGlfwWindow) {
         if (this.handle != 0L) return true;
+        // The capture exclusion below is Cocoa-only; on Windows or Linux the
+        // native window call would throw, so do not even open the window.
+        if (!MacOSCapture.isAvailable()) return false;
         this.parentHandle = parentGlfwWindow;
         long previousContext = GLFW.glfwGetCurrentContext();
 

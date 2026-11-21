@@ -2,9 +2,11 @@ package com.slither.cyemer.module.implementation;
 
 import com.slither.cyemer.module.Category;
 import com.slither.cyemer.module.Module;
+import com.slither.cyemer.util.streamproof.MacOSCapture;
 import com.slither.cyemer.util.streamproof.StreamProofPresenter;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.minecraft.class_2561;
 import net.minecraft.class_310;
 
 /**
@@ -25,7 +27,22 @@ public class StreamProof extends Module {
     public void onEnable() {
         class_310 mc = class_310.method_1551();
         if (mc == null || mc.method_22683() == null) return;
-        StreamProofPresenter.enable(mc.method_22683().method_4490());
+        if (!MacOSCapture.isAvailable()) {
+            // Hiding a window from capture is done through Cocoa; there is no
+            // Windows or Linux path yet, so say so instead of failing.
+            if (mc.field_1724 != null) {
+                mc.field_1724.method_7353(class_2561.method_43470("§c[StreamProof]§r §7only works on macOS for now"), false);
+            }
+            this.setEnabled(false);
+            return;
+        }
+        try {
+            if (!StreamProofPresenter.enable(mc.method_22683().method_4490())) {
+                this.setEnabled(false);
+            }
+        } catch (Throwable t) {
+            this.setEnabled(false);
+        }
     }
 
     @Override
