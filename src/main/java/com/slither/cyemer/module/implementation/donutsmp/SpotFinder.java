@@ -6,6 +6,7 @@ import com.slither.cyemer.module.Category;
 import com.slither.cyemer.module.ColorSetting;
 import com.slither.cyemer.module.Module;
 import com.slither.cyemer.module.SliderSetting;
+import com.slither.cyemer.util.RotationManager;
 import com.slither.cyemer.util.render.RenderUtils;
 import java.awt.Color;
 import java.util.ArrayDeque;
@@ -17,20 +18,31 @@ import java.util.Map;
 import java.util.function.Predicate;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
+import net.minecraft.class_1661;
+import net.minecraft.class_1799;
+import net.minecraft.class_1887;
+import net.minecraft.class_1890;
+import net.minecraft.class_1893;
 import net.minecraft.class_1937;
 import net.minecraft.class_2338;
 import net.minecraft.class_2346;
+import net.minecraft.class_239;
 import net.minecraft.class_238;
 import net.minecraft.class_243;
 import net.minecraft.class_2561;
 import net.minecraft.class_2680;
 import net.minecraft.class_2818;
 import net.minecraft.class_2826;
+import net.minecraft.class_304;
+import net.minecraft.class_3959;
+import net.minecraft.class_3965;
 import net.minecraft.class_4587;
 import net.minecraft.class_4597;
 import net.minecraft.class_4597.class_4598;
 import net.minecraft.class_638;
+import net.minecraft.class_6880;
 import net.minecraft.class_746;
+import net.minecraft.class_7924;
 import net.minecraft.class_9799;
 
 /**
@@ -51,6 +63,10 @@ import net.minecraft.class_9799;
  * per-block read entirely. Only what the client is sent is known: on a
  * server whose anti-xray hides caves themselves, a hidden cave would look
  * solid.
+ *
+ * Auto Mine digs out the nearest spot: it looks at each block and holds
+ * attack like a player, only ever while the crosshair is on a block inside
+ * the room, and walks within the opened room to reach the rest.
  */
 @Environment(EnvType.CLIENT)
 public class SpotFinder extends Module {
@@ -74,6 +90,10 @@ public class SpotFinder extends Module {
     private final BooleanSetting tracer = new BooleanSetting("Tracer", true);
     /** A button: turning it on prints the spots and turns itself back off. */
     private final BooleanSetting listSpots = new BooleanSetting("List Spots", false);
+    private final BooleanSetting autoMine = new BooleanSetting("Auto Mine", false);
+    private final SliderSetting turnSpeed = new SliderSetting("Turn Speed", 22.0, 1.0, 35.0, 1);
+    private final BooleanSetting autoWalk = new BooleanSetting("Auto Walk", true);
+    private final BooleanSetting bestTool = new BooleanSetting("Best Tool", true);
 
     private static final class ChunkInfo {
         final class_2818 chunk;
@@ -110,6 +130,17 @@ public class SpotFinder extends Module {
     private int[] insideSums = new int[0];
     private final class_2338.class_2339 probe = new class_2338.class_2339();
 
+    /** A block to mine and the point on it to look at. */
+    private record Aim(int x, int y, int z, class_243 point) {}
+
+    private Spot mining = null;
+    private Aim mineTarget = null;
+    private long targetSince = 0L;
+    private final Map<Long, Long> skipped = new HashMap<>();
+    private boolean holdingAttack = false;
+    private boolean holdingForward = false;
+    private String lastHint = null;
+
     public SpotFinder() {
         super("SpotFinder", "Finds sealed spots to dig a hidden room: solid on every side once mined out.", Category.DONUT_SMP);
         this.addSetting(this.length);
@@ -124,6 +155,10 @@ public class SpotFinder extends Module {
         this.addSetting(this.color);
         this.addSetting(this.tracer);
         this.addSetting(this.listSpots);
+        this.addSetting(this.autoMine);
+        this.addSetting(this.turnSpeed);
+        this.addSetting(this.autoWalk);
+        this.addSetting(this.bestTool);
         instance = this;
     }
 
@@ -138,6 +173,7 @@ public class SpotFinder extends Module {
 
     @Override
     public void onDisable() {
+        this.stopMining();
         this.reset();
     }
 
@@ -171,6 +207,7 @@ public class SpotFinder extends Module {
         }
         if (world != this.lastWorld) {
             this.lastWorld = world;
+            this.stopMining(); // a spot in another world means nothing here
             this.reset();
         }
         // The column grades depend on the vertical settings; the footprint
@@ -210,6 +247,13 @@ public class SpotFinder extends Module {
                 this.announced = true;
                 this.say("§7Nearest: " + this.describe(this.spots.get(0), self));
             }
+        }
+
+        if (this.autoMine.isEnabled()) {
+            this.tickMine(world, self);
+        } else if (this.mining != null || this.holdingAttack || this.holdingForward) {
+            this.stopMining();
+            this.lastHint = null;
         }
 
         if (this.listSpots.isEnabled()) {
@@ -328,6 +372,272 @@ public class SpotFinder extends Module {
             }
         }
         return flags;
+    }
+
+    // ---- Auto Mine ----
+
+    /**
+     * Mines the locked spot the way a player does: turns the camera onto a
+     * block and holds attack, so vanilla does the breaking, the progress and
+     * the packets. Attack is only held while the crosshair is actually on a
+     * block inside the room, so a turn that sweeps across a wall can never
+     * chip it; the walls are what keeps the room sealed.
+     */
+    private void tickMine(class_638 world, class_746 self) {
+        if (this.mc.field_1755 != null) {
+            this.releaseKeys(); // a screen is open: hands off, camera included
+            RotationManager.stop(this);
+            return;
+        }
+        if (this.mining == null) {
+            if (this.spots.isEmpty()) {
+                this.hint("§7Auto Mine is waiting for a spot to be found");
+                return;
+            }
+            this.mining = this.spots.get(0);
+            this.skipped.clear();
+            this.say("§aMining§r §7" + this.describe(this.mining, self));
+        }
+        Spot s = this.mining;
+        long now = System.currentTimeMillis();
+        this.skipped.values().removeIf(until -> until < now);
+
+        class_243 eye = self.method_33571();
+        double reach = self.method_55754() - 0.25;
+        Aim best = null;
+        double bestD = Double.MAX_VALUE;
+        int ex = (int) Math.floor(eye.field_1352);
+        int ey = (int) Math.floor(eye.field_1351);
+        int ez = (int) Math.floor(eye.field_1350);
+        int r = (int) Math.ceil(reach) + 1;
+        for (int x = Math.max(s.x(), ex - r); x <= Math.min(s.x() + s.lx() - 1, ex + r); x++) {
+            for (int y = Math.max(s.y(), ey - r); y <= Math.min(s.y() + s.h() - 1, ey + r); y++) {
+                for (int z = Math.max(s.z(), ez - r); z <= Math.min(s.z() + s.lz() - 1, ez + r); z++) {
+                    if (!this.minable(world, x, y, z) || this.skipped.containsKey(pack(x, y, z))) {
+                        continue;
+                    }
+                    class_243 point = this.visiblePoint(world, self, eye, x, y, z, reach);
+                    if (point == null) {
+                        continue;
+                    }
+                    double d = point.method_1025(eye);
+                    if (d < bestD) {
+                        bestD = d;
+                        best = new Aim(x, y, z, point);
+                    }
+                }
+            }
+        }
+
+        if (best == null) {
+            this.mineTarget = null;
+            this.setKey(this.mc.field_1690.field_1886, false, true);
+            if (this.ticks % 10 == 0 && this.remaining(world, s) == 0) {
+                this.say("§aRoom mined out§r §7- " + s.lx() + "x" + s.lz() + "x" + s.h() + " at (" + s.x() + ", " + s.y() + ", " + s.z() + ")");
+                this.autoMine.setEnabled(false);
+                this.stopMining();
+                return;
+            }
+            this.walkIntoRoom(world, self, s);
+            return;
+        }
+        this.setKey(this.mc.field_1690.field_1894, false, false); // close enough: stop walking
+
+        // The spot was sealed when found; make sure it still is before opening this block.
+        if (this.fluidBeside(world, best.x(), best.y(), best.z())) {
+            this.say("§cAuto Mine stopped§r §7- fluid beside (" + best.x() + ", " + best.y() + ", " + best.z() + "), so nothing floods in");
+            this.autoMine.setEnabled(false);
+            this.stopMining();
+            return;
+        }
+
+        if (this.mineTarget == null || this.mineTarget.x() != best.x() || this.mineTarget.y() != best.y() || this.mineTarget.z() != best.z()) {
+            this.mineTarget = best;
+            this.targetSince = now;
+        } else if (now - this.targetSince > 6000L) {
+            // Five seconds on one block without breaking it: come back to it later.
+            this.skipped.put(pack(best.x(), best.y(), best.z()), now + 10_000L);
+            this.mineTarget = null;
+            return;
+        }
+        if (this.bestTool.isEnabled()) {
+            this.selectBestTool(world.method_8320(this.probe.method_10103(best.x(), best.y(), best.z())));
+        }
+
+        class_243 aimPoint = best.point();
+        RotationManager.setRotationSupplier(this, RotationManager.Priority.NORMAL, () -> aimPoint, this.turnSpeed.getValue(),
+                RotationManager.RotationMode.LINEAR, 0.0, false, false);
+        this.setKey(this.mc.field_1690.field_1886, this.crosshairInRoom(world, s), true);
+    }
+
+    /** A block the crosshair is on, if it is a minable block inside the room. */
+    private boolean crosshairInRoom(class_638 world, Spot s) {
+        if (!(this.mc.field_1765 instanceof class_3965 hit) || hit.method_17783() != class_239.class_240.field_1332) {
+            return false;
+        }
+        class_2338 pos = hit.method_17777();
+        int x = pos.method_10263();
+        int y = pos.method_10264();
+        int z = pos.method_10260();
+        return x >= s.x() && x < s.x() + s.lx() && y >= s.y() && y < s.y() + s.h() && z >= s.z() && z < s.z() + s.lz()
+                && this.minable(world, x, y, z);
+    }
+
+    private boolean minable(class_638 world, int x, int y, int z) {
+        class_2680 state = world.method_8320(this.probe.method_10103(x, y, z));
+        return !state.method_26215() && state.method_26227().method_15769() && state.method_26214(world, this.probe) >= 0.0F;
+    }
+
+    /**
+     * A point on the block the eye can see within reach: its centre or the
+     * middle of a face, checked with the same outline raycast the crosshair
+     * uses, so aiming there really puts the crosshair on this block.
+     */
+    private class_243 visiblePoint(class_638 world, class_746 self, class_243 eye, int x, int y, int z, double reach) {
+        double reach2 = reach * reach;
+        double[][] offsets = {{0.5, 0.5, 0.5}, {0.5, 0.95, 0.5}, {0.5, 0.05, 0.5}, {0.05, 0.5, 0.5}, {0.95, 0.5, 0.5}, {0.5, 0.5, 0.05}, {0.5, 0.5, 0.95}};
+        for (double[] o : offsets) {
+            class_243 point = new class_243(x + o[0], y + o[1], z + o[2]);
+            if (point.method_1025(eye) > reach2) {
+                continue;
+            }
+            class_3965 hit = world.method_17742(new class_3959(eye, point, class_3959.class_3960.field_17559, class_3959.class_242.field_1348, self));
+            if (hit != null && hit.method_17783() == class_239.class_240.field_1332) {
+                class_2338 pos = hit.method_17777();
+                if (pos.method_10263() == x && pos.method_10264() == y && pos.method_10260() == z) {
+                    return point;
+                }
+            }
+        }
+        return null;
+    }
+
+    private boolean fluidBeside(class_638 world, int x, int y, int z) {
+        int[][] around = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
+        for (int[] o : around) {
+            if (!world.method_8320(this.probe.method_10103(x + o[0], y + o[1], z + o[2])).method_26227().method_15769()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private int remaining(class_638 world, Spot s) {
+        int count = 0;
+        for (int x = s.x(); x < s.x() + s.lx(); x++) {
+            for (int y = s.y(); y < s.y() + s.h(); y++) {
+                for (int z = s.z(); z < s.z() + s.lz(); z++) {
+                    if (this.minable(world, x, y, z)) {
+                        count++;
+                    }
+                }
+            }
+        }
+        return count;
+    }
+
+    /**
+     * Nothing in reach: if we are already standing inside the opened room,
+     * walk toward the nearest block still to mine. The room is flat and
+     * sealed, so walking in it is safe; outside it we never move the player
+     * (that is where caves and drops are), we just say where to go.
+     */
+    private void walkIntoRoom(class_638 world, class_746 self, Spot s) {
+        int fx = (int) Math.floor(self.method_23317());
+        int fy = (int) Math.floor(self.method_23318() + 0.2);
+        int fz = (int) Math.floor(self.method_23321());
+        boolean inside = fx >= s.x() && fx < s.x() + s.lx() && fz >= s.z() && fz < s.z() + s.lz() && fy >= s.y() && fy < s.y() + s.h();
+        if (!this.autoWalk.isEnabled() || !inside || s.h() < 2) {
+            this.setKey(this.mc.field_1690.field_1894, false, false);
+            RotationManager.stop(this);
+            this.hint("§7Get within reach of the room to start: dig down to (" + s.x() + ", " + s.y() + ", " + s.z() + ")");
+            return;
+        }
+        class_243 goal = null;
+        double bestD = Double.MAX_VALUE;
+        for (int x = s.x(); x < s.x() + s.lx(); x++) {
+            for (int y = s.y(); y < s.y() + s.h(); y++) {
+                for (int z = s.z(); z < s.z() + s.lz(); z++) {
+                    if (!this.minable(world, x, y, z) || this.skipped.containsKey(pack(x, y, z))) {
+                        continue;
+                    }
+                    double dx = x + 0.5 - self.method_23317();
+                    double dz = z + 0.5 - self.method_23321();
+                    double d = dx * dx + dz * dz;
+                    if (d < bestD) {
+                        bestD = d;
+                        goal = new class_243(x + 0.5, self.method_33571().field_1351, z + 0.5);
+                    }
+                }
+            }
+        }
+        if (goal == null) {
+            this.setKey(this.mc.field_1690.field_1894, false, false);
+            return;
+        }
+        class_243 walkTo = goal;
+        RotationManager.setRotationSupplier(this, RotationManager.Priority.NORMAL, () -> walkTo, this.turnSpeed.getValue(),
+                RotationManager.RotationMode.LINEAR, 0.0, false, true);
+        this.setKey(this.mc.field_1690.field_1894, RotationManager.isRotationComplete(25.0F), false);
+    }
+
+    private void selectBestTool(class_2680 state) {
+        class_1661 inventory = this.mc.field_1724.method_31548();
+        class_6880<class_1887> efficiency = this.mc.field_1687.method_30349().method_30530(class_7924.field_41265).method_46747(class_1893.field_9131);
+        int bestSlot = -1;
+        float bestSpeed = 1.0F;
+        for (int i = 0; i < 9; i++) {
+            class_1799 stack = inventory.method_5438(i);
+            if (stack.method_7960()) {
+                continue;
+            }
+            float speed = stack.method_7924(state);
+            int level = class_1890.method_8225(efficiency, stack);
+            if (level > 0 && speed > 1.0F) {
+                speed += level * level + 1;
+            }
+            if (speed > bestSpeed) {
+                bestSpeed = speed;
+                bestSlot = i;
+            }
+        }
+        if (bestSlot != -1 && inventory.method_67532() != bestSlot) {
+            inventory.method_61496(bestSlot);
+        }
+    }
+
+    /** Presses or releases a key, remembering which ones we hold so we only ever let go of our own. */
+    private void setKey(class_304 key, boolean down, boolean attack) {
+        boolean held = attack ? this.holdingAttack : this.holdingForward;
+        if (down == held) {
+            return;
+        }
+        key.method_23481(down);
+        if (attack) {
+            this.holdingAttack = down;
+        } else {
+            this.holdingForward = down;
+        }
+    }
+
+    private void releaseKeys() {
+        this.setKey(this.mc.field_1690.field_1886, false, true);
+        this.setKey(this.mc.field_1690.field_1894, false, false);
+    }
+
+    private void stopMining() {
+        this.releaseKeys();
+        RotationManager.stop(this);
+        this.mining = null;
+        this.mineTarget = null;
+    }
+
+    /** Says each distinct hint once, not every tick. */
+    private void hint(String message) {
+        if (!message.equals(this.lastHint)) {
+            this.lastHint = message;
+            this.say(message);
+        }
     }
 
     /** From ClientWorldMixin: a changed block in the graded layers regrades its chunk. */
@@ -484,7 +794,7 @@ public class SpotFinder extends Module {
     public void onWorldRender(class_4587 matrices, float tickDelta) {
         List<Spot> shown = this.spots;
         class_746 self = this.mc.field_1724;
-        if (shown.isEmpty() || self == null || Cyemer.selfDestructed) {
+        if ((shown.isEmpty() && this.mining == null) || self == null || Cyemer.selfDestructed) {
             return;
         }
         class_243 cam = this.mc.field_1773.method_19418().method_71156();
@@ -494,20 +804,38 @@ public class SpotFinder extends Module {
         Color c = this.color.getValue();
         try (class_9799 allocator = new class_9799(8192)) {
             class_4598 consumers = class_4597.method_22991(allocator);
-            for (int i = 0; i < shown.size(); i++) {
-                Spot s = shown.get(i);
-                float strength = i == 0 ? 1.0F : 0.55F; // the nearest stands out
+            Spot locked = this.mining;
+            List<Spot> all = new ArrayList<>(shown);
+            if (locked != null && !all.contains(locked)) {
+                all.add(0, locked);
+            }
+            for (int i = 0; i < all.size(); i++) {
+                Spot s = all.get(i);
+                boolean primary = locked != null ? s.equals(locked) : i == 0;
+                float strength = primary ? 1.0F : 0.5F; // the one being mined, or the nearest, stands out
                 double x0 = s.x() - cx;
                 double y0 = s.y() - cy;
                 double z0 = s.z() - cz;
                 double x1 = x0 + s.lx();
                 double y1 = y0 + s.h();
                 double z1 = z0 + s.lz();
-                RenderUtils.drawBoxEsp(matrices, consumers, new class_238(x0, y0, z0, x1, y1, z1), c, 0.12F * strength, true);
-                edges(matrices, consumers, x0, y0, z0, x1, y1, z1, c, 0.9F * strength);
+                // Bars thicken with distance so the outline reads at any range.
+                double far = Math.sqrt((x0 + x1) * (x0 + x1) + (y0 + y1) * (y0 + y1) + (z0 + z1) * (z0 + z1)) / 2.0;
+                double w = Math.max(0.03, Math.min(0.3, 0.02 + far * 0.004));
+                RenderUtils.drawBoxEsp(matrices, consumers, new class_238(x0, y0, z0, x1, y1, z1), c, 0.07F * strength, true);
+                RenderUtils.drawBoxEsp(matrices, consumers, new class_238(x0, y0, z0, x1, y0 + 0.02, z1), c, 0.22F * strength, true);
+                outline(matrices, consumers, x0, y0, z0, x1, y1, z1, w, c, 0.95F * strength);
+            }
+            Aim target = this.mineTarget;
+            if (target != null) {
+                double tx = target.x() - cx;
+                double ty = target.y() - cy;
+                double tz = target.z() - cz;
+                RenderUtils.drawBoxEsp(matrices, consumers, new class_238(tx + 0.02, ty + 0.02, tz + 0.02, tx + 0.98, ty + 0.98, tz + 0.98),
+                        Color.WHITE, 0.35F, true);
             }
             if (this.tracer.isEnabled()) {
-                Spot s = shown.get(0);
+                Spot s = this.mining != null ? this.mining : shown.get(0);
                 class_243 look = self.method_5828(tickDelta);
                 RenderUtils.drawLine(matrices, consumers, new class_243(look.field_1352 * 0.6, look.field_1351 * 0.6, look.field_1350 * 0.6),
                         new class_243(s.centerX() - cx, s.y() + s.h() / 2.0 - cy, s.centerZ() - cz), c, 0.8F, true);
@@ -516,15 +844,30 @@ public class SpotFinder extends Module {
         }
     }
 
-    /** The twelve edges of a box, drawn through terrain. */
-    private static void edges(class_4587 m, class_4598 v, double x0, double y0, double z0, double x1, double y1, double z1, Color c, float a) {
-        double[][] corners = {{x0, y0, z0}, {x1, y0, z0}, {x1, y0, z1}, {x0, y0, z1}, {x0, y1, z0}, {x1, y1, z0}, {x1, y1, z1}, {x0, y1, z1}};
-        int[][] pairs = {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6}, {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
-        for (int[] p : pairs) {
-            double[] a0 = corners[p[0]];
-            double[] b0 = corners[p[1]];
-            RenderUtils.drawLine(m, v, new class_243(a0[0], a0[1], a0[2]), new class_243(b0[0], b0[1], b0[2]), c, a, true);
+    /**
+     * The twelve edges of a box as solid bars w thick, drawn through
+     * terrain. Lines in this pipeline are a single pixel, which disappears
+     * underground; bars stay clear.
+     */
+    private static void outline(class_4587 m, class_4598 v, double x0, double y0, double z0, double x1, double y1, double z1,
+                                double w, Color c, float a) {
+        for (double y : new double[]{y0, y1}) {
+            for (double z : new double[]{z0, z1}) {
+                RenderUtils.drawBoxEsp(m, v, new class_238(x0 - w, y - w, z - w, x1 + w, y + w, z + w), c, a, true);
+            }
+            for (double x : new double[]{x0, x1}) {
+                RenderUtils.drawBoxEsp(m, v, new class_238(x - w, y - w, z0 - w, x + w, y + w, z1 + w), c, a, true);
+            }
         }
+        for (double x : new double[]{x0, x1}) {
+            for (double z : new double[]{z0, z1}) {
+                RenderUtils.drawBoxEsp(m, v, new class_238(x - w, y0 - w, z - w, x + w, y1 + w, z + w), c, a, true);
+            }
+        }
+    }
+
+    private static long pack(int x, int y, int z) {
+        return ((long) (x & 0x3FFFFFF) << 38) | ((long) (z & 0x3FFFFFF) << 12) | (y & 0xFFF);
     }
 
     private void say(String message) {
