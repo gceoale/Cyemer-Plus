@@ -9,6 +9,8 @@ import com.slither.cyemer.module.ModeSetting;
 import com.slither.cyemer.module.Module;
 import com.slither.cyemer.module.SliderSetting;
 import com.slither.cyemer.module.StringSetting;
+import com.slither.cyemer.module.implementation.Notifications;
+import com.slither.cyemer.util.AutoRtp;
 import com.slither.cyemer.util.render.RenderUtils;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
@@ -38,6 +40,7 @@ import net.minecraft.class_2826;
 import net.minecraft.class_4587;
 import net.minecraft.class_4597;
 import net.minecraft.class_4597.class_4598;
+import net.minecraft.class_634;
 import net.minecraft.class_638;
 import net.minecraft.class_746;
 import net.minecraft.class_9799;
@@ -80,6 +83,9 @@ public class BlockESP extends Module {
     private final BooleanSetting tracers = new BooleanSetting("Tracers", false);
     private final BooleanSetting notify = new BooleanSetting("Notify", false);
     private final SliderSetting maxShown = new SliderSetting("Max Shown", 512.0, 16.0, 4096.0, 0);
+    private final BooleanSetting autoRtp = new BooleanSetting("AutoRTP", false);
+    private final SliderSetting rtpInterval = new SliderSetting("RTP Interval (s)", 0.5, 0.5, 30.0, 1);
+    private final StringSetting rtpCommand = new StringSetting("RTP Command", "/rtp");
 
     /** Matching positions per chunk, both as packed longs. */
     private final Map<Long, LongOpenHashSet> found = new HashMap<>();
@@ -95,6 +101,8 @@ public class BlockESP extends Module {
     private String seenSeed = null;
     private String lastStatus = null;
     private boolean predictionBroken = false;
+    private long lastRtpAt = 0L;
+    private class_634 lastConnection = null;
     private class_1937 lastWorld = null;
     private int seenVersion = -1;
     private int ticks = 0;
@@ -119,6 +127,9 @@ public class BlockESP extends Module {
         this.addSetting(this.tracers);
         this.addSetting(this.notify);
         this.addSetting(this.maxShown);
+        this.addSetting(this.autoRtp);
+        this.addSetting(this.rtpInterval);
+        this.addSetting(this.rtpCommand);
         instance = this;
     }
 
@@ -161,6 +172,16 @@ public class BlockESP extends Module {
         if (world != this.lastWorld) {
             this.lastWorld = world;
             this.reset();
+        }
+        // A fresh connection is most likely a rejoin after a kick, exactly when
+        // carrying on with the command spam would get us kicked again.
+        class_634 connection = this.mc.method_1562();
+        if (connection != this.lastConnection) {
+            if (this.lastConnection != null && this.autoRtp.isEnabled()) {
+                this.autoRtp.setEnabled(false);
+                this.say("§cAutoRTP off§r §7- reconnected");
+            }
+            this.lastConnection = connection;
         }
         int version = this.blocks.getVersion();
         String modeNow = this.mode.getCurrentMode();
@@ -223,6 +244,44 @@ public class BlockESP extends Module {
             this.rebuildShown(self);
         }
         this.flushNotify(self);
+
+        // After the scans, so a find made this tick stops it before it fires.
+        long now = System.currentTimeMillis();
+        if (this.autoRtp.isEnabled() && now - this.lastRtpAt >= (long) (this.rtpInterval.getValue() * 1000.0)) {
+            this.lastRtpAt = now;
+            AutoRtp.send(this.rtpCommand.getValue());
+        }
+    }
+
+    /** Quietly turns AutoRTP off; called when any module's find stops every AutoRTP. */
+    public void cancelAutoRtp() {
+        if (this.autoRtp.isEnabled()) {
+            this.autoRtp.setEnabled(false);
+        }
+    }
+
+    /**
+     * A picked block the scan had not seen before stops AutoRTP. Only real
+     * blocks count: predicted ore is in every chunk, so it would stop it
+     * on the first one.
+     */
+    private void stopRtpOn(long pos, class_2248 block, class_746 self) {
+        if (!this.autoRtp.isEnabled()) {
+            return;
+        }
+        AutoRtp.stopAll();
+        int x = unpackX(pos);
+        int y = unpackY(pos);
+        int z = unpackZ(pos);
+        double dx = x + 0.5 - self.method_23317();
+        double dy = y + 0.5 - self.method_23318();
+        double dz = z + 0.5 - self.method_23321();
+        String name = block.method_9518().getString();
+        this.say("§cAutoRTP stopped§r §7- " + name + " " + (int) Math.round(Math.sqrt(dx * dx + dy * dy + dz * dz)) + "m "
+                + compass(dx, dz) + " §8(" + x + ", " + y + ", " + z + ")");
+        if (Cyemer.getInstance().getModuleManager().getModule("Notifications") instanceof Notifications notifications) {
+            notifications.warn("AutoRTP stopped", name + " found");
+        }
     }
 
     /** Queues loaded chunks that are new or have been reloaded since they were read, nearest first. */
@@ -530,6 +589,7 @@ public class BlockESP extends Module {
     }
 
     private void noteNew(long pos, class_2248 block, class_746 self) {
+        this.stopRtpOn(pos, block, self);
         if (!this.notify.isEnabled() || this.initialPass) {
             return; // what was already there when we joined is not news
         }

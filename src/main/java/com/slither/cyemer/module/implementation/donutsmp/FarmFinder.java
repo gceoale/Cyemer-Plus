@@ -8,6 +8,7 @@ import com.slither.cyemer.module.Module;
 import com.slither.cyemer.module.SliderSetting;
 import com.slither.cyemer.module.StringSetting;
 import com.slither.cyemer.module.implementation.Notifications;
+import com.slither.cyemer.util.AutoRtp;
 import com.slither.cyemer.util.render.RenderUtils;
 import java.awt.Color;
 import java.util.ArrayList;
@@ -30,6 +31,9 @@ import net.minecraft.class_2248;
 import net.minecraft.class_2338;
 import net.minecraft.class_2561;
 import net.minecraft.class_1297;
+import net.minecraft.class_1299;
+import net.minecraft.class_1311;
+import net.minecraft.class_1321;
 import net.minecraft.class_2586;
 import net.minecraft.class_2591;
 import net.minecraft.class_2636;
@@ -39,6 +43,7 @@ import net.minecraft.class_243;
 import net.minecraft.class_2960;
 import net.minecraft.class_332;
 import net.minecraft.class_3417;
+import net.minecraft.class_3486;
 import net.minecraft.class_4587;
 import net.minecraft.class_4597;
 import net.minecraft.class_4597.class_4598;
@@ -125,7 +130,13 @@ public class FarmFinder extends Module {
         CHEST(new Color(215, 150, 60)),
         SHULKER(new Color(220, 100, 255)),
         SPAWNER(new Color(255, 50, 170)),
-        BASE(new Color(60, 255, 200));
+        BASE(new Color(60, 255, 200)),
+        CROP(new Color(150, 230, 70)),
+        VILLAGER(new Color(90, 200, 120)),
+        ANIMAL(new Color(240, 200, 150)),
+        MOB(new Color(200, 60, 60)),
+        ITEM(new Color(255, 255, 140)),
+        BASE_SIGN(new Color(120, 220, 255));
 
         final Color color;
 
@@ -198,12 +209,37 @@ public class FarmFinder extends Module {
                     class_2246.field_47076, class_2246.field_47077, class_2246.field_47078, class_2246.field_47079}) {
                 m.put(b, bulb);
             }
+            // Crops whose age the server sends as an in-place state change.
+            m.put(class_2246.field_10293, new Source(Family.CROP, "Wheat"));
+            m.put(class_2246.field_10609, new Source(Family.CROP, "Carrots"));
+            m.put(class_2246.field_10247, new Source(Family.CROP, "Potatoes"));
+            m.put(class_2246.field_10341, new Source(Family.CROP, "Beetroots"));
+            m.put(class_2246.field_9974, new Source(Family.CROP, "Nether Wart"));
+            m.put(class_2246.field_10302, new Source(Family.CROP, "Cocoa"));
+            m.put(class_2246.field_16999, new Source(Family.CROP, "Sweet Berries"));
             Source sculk = new Source(Family.REDSTONE, "Sculk Sensor");
             m.put(class_2246.field_28108, sculk);
             m.put(class_2246.field_43231, sculk);
             blockSources = m;
         }
         return blockSources;
+    }
+
+    /** Plants that grow upward; each group shares one Source so a block can be matched to what is under it. */
+    private static Map<class_2248, Source> growthSources;
+
+    private static Map<class_2248, Source> growthSources() {
+        if (growthSources == null) {
+            Map<class_2248, Source> m = new HashMap<>();
+            m.put(class_2246.field_10424, new Source(Family.CROP, "Sugar Cane"));
+            m.put(class_2246.field_10029, new Source(Family.CROP, "Cactus"));
+            m.put(class_2246.field_10211, new Source(Family.CROP, "Bamboo"));
+            Source kelp = new Source(Family.CROP, "Kelp");
+            m.put(class_2246.field_9993, kelp);
+            m.put(class_2246.field_10463, kelp);
+            growthSources = m;
+        }
+        return growthSources;
     }
 
     private static Map<class_2591<?>, Source> stashSources() {
@@ -255,6 +291,12 @@ public class FarmFinder extends Module {
     private final BooleanSetting spawners = new BooleanSetting("Spawners", true);
     private final BooleanSetting flagSpawners = new BooleanSetting("Flag Spawners", true);
     private final BooleanSetting baseBlocks = new BooleanSetting("Base Blocks", true);
+    private final BooleanSetting crops = new BooleanSetting("Crops", true);
+    private final BooleanSetting villagerFarms = new BooleanSetting("Villager Farms", true);
+    private final BooleanSetting animalFarms = new BooleanSetting("Animal Farms", true);
+    private final BooleanSetting mobFarms = new BooleanSetting("Mob Farms", true);
+    private final BooleanSetting itemStreams = new BooleanSetting("Item Streams", true);
+    private final BooleanSetting baseSigns = new BooleanSetting("Base Signs", true);
     private final BooleanSetting blockUpdates = new BooleanSetting("Block Updates", true);
     private final BooleanSetting stashScan = new BooleanSetting("Stash Scan", true);
     private final SliderSetting stashThreshold = new SliderSetting("Stash Threshold", 6.0, 1.0, 40.0, 0);
@@ -353,6 +395,26 @@ public class FarmFinder extends Module {
     /** mob is null when the server has not told the client what it spawns. */
     private record SpawnerHit(int x, int y, int z, String mob, double distance) {}
 
+    private record Body(double x, double y, double z, boolean still) {}
+
+    private record Cluster2(Body center, List<Body> members) {}
+
+    private record EntityHit(String group, Family family, String label, String detail, Cluster2 cluster) {}
+
+    private record EntityAlert(String group, double x, double y, double z) {}
+
+    /** Where each tracked villager has been standing, and since when. */
+    private static final class Track {
+        double x;
+        double y;
+        double z;
+        long since;
+        long seenAt;
+    }
+
+    private final Map<Integer, Track> tracks = new HashMap<>();
+    private final List<EntityAlert> entityAlerts = new ArrayList<>();
+
     public FarmFinder() {
         super("FarmFinder", "Alerts when redstone farm parts fire nearby: pistons, observers, smelters and more.", Category.DONUT_SMP);
         this.addSetting(this.pistons);
@@ -368,6 +430,12 @@ public class FarmFinder extends Module {
         this.addSetting(this.spawners);
         this.addSetting(this.flagSpawners);
         this.addSetting(this.baseBlocks);
+        this.addSetting(this.crops);
+        this.addSetting(this.villagerFarms);
+        this.addSetting(this.animalFarms);
+        this.addSetting(this.mobFarms);
+        this.addSetting(this.itemStreams);
+        this.addSetting(this.baseSigns);
         this.addSetting(this.blockUpdates);
         this.addSetting(this.stashScan);
         this.addSetting(this.stashThreshold);
@@ -458,9 +526,12 @@ public class FarmFinder extends Module {
             this.rebuildDensity();
         }
 
-        if ((this.stashScan.isEnabled() || this.flagSpawners.isEnabled()) && now - this.lastStashScanAt >= STASH_SCAN_MS) {
+        if (now - this.lastStashScanAt >= STASH_SCAN_MS) {
             this.lastStashScanAt = now;
-            this.scanStashes();
+            if (this.stashScan.isEnabled() || this.flagSpawners.isEnabled()) {
+                this.scanStashes();
+            }
+            this.scanEntities();
         }
 
         this.tickRoute(now);
@@ -499,6 +570,10 @@ public class FarmFinder extends Module {
         }
         class_2248 block = after.method_26204();
         if (before.method_26204() != block) {
+            Source grew = this.growth(pos, before, block);
+            if (grew != null && this.familyEnabled(grew.family())) {
+                this.report(grew, pos.method_10263() + 0.5, pos.method_10264() + 0.5, pos.method_10260() + 0.5);
+            }
             return;
         }
 
@@ -523,6 +598,12 @@ public class FarmFinder extends Module {
             case SHULKER -> this.shulkers.isEnabled();
             case SPAWNER -> this.spawners.isEnabled();
             case BASE -> this.baseBlocks.isEnabled();
+            case CROP -> this.crops.isEnabled();
+            case VILLAGER -> this.villagerFarms.isEnabled();
+            case ANIMAL -> this.animalFarms.isEnabled();
+            case MOB -> this.mobFarms.isEnabled();
+            case ITEM -> this.itemStreams.isEnabled();
+            case BASE_SIGN -> this.baseSigns.isEnabled();
         };
     }
 
@@ -616,9 +697,307 @@ public class FarmFinder extends Module {
         }
     }
 
+    /**
+     * Farms that are mostly mobs, read off the entities the server tracks
+     * around us (about 48 blocks for mobs, 32 for items). Every rule needs a
+     * crowd far denser than anything that spawns naturally: a village keeps
+     * its villagers walking and spread out, a herd spawns 2 to 4 together.
+     */
+    private void scanEntities() {
+        class_746 self = this.mc.field_1724;
+        class_638 world = this.mc.field_1687;
+        if (self == null || world == null) {
+            return;
+        }
+        boolean villagers = this.villagerFarms.isEnabled();
+        boolean animals = this.animalFarms.isEnabled();
+        boolean mobs = this.mobFarms.isEnabled();
+        boolean items = this.itemStreams.isEnabled();
+        boolean signs = this.baseSigns.isEnabled();
+        if (!villagers && !animals && !mobs && !items && !signs) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        List<Body> villagerList = new ArrayList<>();
+        List<Body> golems = new ArrayList<>();
+        List<Body> monsters = new ArrayList<>();
+        List<Body> itemList = new ArrayList<>();
+        List<Body> carts = new ArrayList<>();
+        List<Body> decor = new ArrayList<>();
+        List<Body> pets = new ArrayList<>();
+        Map<String, List<Body>> herds = new HashMap<>();
+
+        for (class_1297 entity : world.method_18112()) {
+            if (entity == self || !entity.method_5805()) {
+                continue;
+            }
+            class_1299<?> type = entity.method_5864();
+            if (type == class_1299.field_6097) {
+                continue; // players are not farms
+            }
+            double x = entity.method_23317();
+            double y = entity.method_23318();
+            double z = entity.method_23321();
+            if (type == class_1299.field_6077) {
+                if (villagers) {
+                    villagerList.add(new Body(x, y, z, this.still(entity.method_5628(), x, y, z, now)));
+                }
+            } else if (type == class_1299.field_6147) {
+                if (villagers) {
+                    golems.add(new Body(x, y, z, false));
+                }
+            } else if (type == class_1299.field_6052) {
+                // Our own drops and pickups are not a farm.
+                if (items && distSq(x, y, z, self.method_23317(), self.method_23318(), self.method_23321()) > 36.0) {
+                    itemList.add(new Body(x, y, z, false));
+                }
+            } else if (type == class_1299.field_6058 || type == class_1299.field_6126) {
+                if (items) {
+                    carts.add(new Body(x, y, z, false));
+                }
+            } else if (type == class_1299.field_6043 || type == class_1299.field_28401 || type == class_1299.field_6131) {
+                if (signs) {
+                    decor.add(new Body(x, y, z, false)); // item frames and armor stands never generate
+                }
+            } else if (signs && isPet(entity, self)) {
+                pets.add(new Body(x, y, z, false));
+            } else if (mobs && type.method_5891() == class_1311.field_6302) {
+                monsters.add(new Body(x, y, z, false));
+            } else if (animals && type.method_5891() == class_1311.field_6294) {
+                herds.computeIfAbsent(type.method_5897().getString(), k -> new ArrayList<>()).add(new Body(x, y, z, false));
+            }
+        }
+        this.tracks.values().removeIf(t -> now - t.seenAt > 30_000L);
+
+        List<EntityHit> hits = new ArrayList<>();
+        if (villagers) {
+            this.villagerClusters(villagerList, golems, hits);
+        }
+        if (animals) {
+            for (Map.Entry<String, List<Body>> herd : herds.entrySet()) {
+                for (Cluster2 c : clusters(herd.getValue(), 7.0, 12)) {
+                    hits.add(new EntityHit("animal:" + herd.getKey(), Family.ANIMAL, herd.getKey() + " farm",
+                            c.members().size() + " " + herd.getKey().toLowerCase() + "s packed together", c));
+                }
+            }
+        }
+        if (mobs) {
+            for (Cluster2 c : clusters(monsters, 6.0, 12)) {
+                hits.add(new EntityHit("mobs", Family.MOB, "Mob farm", c.members().size() + " hostile mobs packed together", c));
+            }
+        }
+        if (items) {
+            for (Cluster2 c : clusters(itemList, 5.0, 25)) {
+                hits.add(new EntityHit("items", Family.ITEM, "Items piling up", c.members().size() + " dropped items in one spot", c));
+            }
+            for (Cluster2 c : clusters(carts, 10.0, 3)) {
+                hits.add(new EntityHit("carts", Family.ITEM, "Minecart system", c.members().size() + " hopper/chest minecarts", c));
+            }
+        }
+        if (signs) {
+            for (Cluster2 c : clusters(decor, 10.0, 4)) {
+                hits.add(new EntityHit("decor", Family.BASE_SIGN, "Base decor", c.members().size() + " item frames / armor stands", c));
+            }
+            for (Cluster2 c : clusters(pets, 16.0, 2)) {
+                hits.add(new EntityHit("pets", Family.BASE_SIGN, "Pets", c.members().size() + " tamed or named mobs", c));
+            }
+        }
+        this.announceEntityHits(self, hits);
+    }
+
+    /**
+     * Villagers packed together and stuck in place are a trading hall or a
+     * breeder; with iron golems among them, an iron farm. Golems alone in a
+     * crowd are an iron farm's kill chamber.
+     */
+    private void villagerClusters(List<Body> villagerList, List<Body> golems, List<EntityHit> hits) {
+        List<Cluster2> found = clusters(villagerList, 6.0, 6);
+        for (Cluster2 c : found) {
+            int stuck = 0;
+            for (Body b : c.members()) {
+                if (b.still()) {
+                    stuck++;
+                }
+            }
+            if (stuck < 4) {
+                continue; // walking around: a village, not a farm
+            }
+            int golemsNear = 0;
+            for (Body g : golems) {
+                if (distSq(g.x(), g.y(), g.z(), c.center().x(), c.center().y(), c.center().z()) <= 100.0) {
+                    golemsNear++;
+                }
+            }
+            if (golemsNear > 0) {
+                hits.add(new EntityHit("villagers", Family.VILLAGER, "Iron farm",
+                        c.members().size() + " villagers (" + stuck + " stuck), " + golemsNear + " iron golem" + (golemsNear == 1 ? "" : "s"), c));
+            } else {
+                hits.add(new EntityHit("villagers", Family.VILLAGER, "Villager hall",
+                        c.members().size() + " villagers, " + stuck + " stuck in place", c));
+            }
+        }
+        for (Cluster2 c : clusters(golems, 8.0, 3)) {
+            hits.add(new EntityHit("golems", Family.VILLAGER, "Iron farm", c.members().size() + " iron golems together", c));
+        }
+    }
+
+    /** Whether an entity has stayed within 1.5 blocks for the last 8 seconds. */
+    private boolean still(int id, double x, double y, double z, long now) {
+        Track t = this.tracks.get(id);
+        if (t == null || distSq(x, y, z, t.x, t.y, t.z) > 2.25) {
+            t = new Track();
+            t.x = x;
+            t.y = y;
+            t.z = z;
+            t.since = now;
+            this.tracks.put(id, t);
+        }
+        t.seenAt = now;
+        return now - t.since >= 8_000L;
+    }
+
+    /** Tamed by someone else, or given a name: a player put it there. */
+    private static boolean isPet(class_1297 entity, class_746 self) {
+        if (entity instanceof class_1321 tame && tame.method_6181()) {
+            return !tame.method_6171(self);
+        }
+        return entity.method_16914();
+    }
+
+    /**
+     * Densest spots first: each body's neighbours within radius, best
+     * counts taken first, and nothing within two radii of a spot already
+     * taken. Entity counts are small, so the square scan is fine.
+     */
+    private static List<Cluster2> clusters(List<Body> bodies, double radius, int min) {
+        List<Cluster2> out = new ArrayList<>();
+        if (bodies.size() < min) {
+            return out;
+        }
+        double r2 = radius * radius;
+        List<Cluster2> candidates = new ArrayList<>();
+        for (Body b : bodies) {
+            List<Body> members = new ArrayList<>();
+            for (Body o : bodies) {
+                if (distSq(b.x(), b.y(), b.z(), o.x(), o.y(), o.z()) <= r2) {
+                    members.add(o);
+                }
+            }
+            if (members.size() >= min) {
+                candidates.add(new Cluster2(b, members));
+            }
+        }
+        candidates.sort((a, c) -> Integer.compare(c.members().size(), a.members().size()));
+        double apart = 4.0 * r2;
+        for (Cluster2 c : candidates) {
+            boolean overlaps = false;
+            for (Cluster2 taken : out) {
+                if (distSq(c.center().x(), c.center().y(), c.center().z(), taken.center().x(), taken.center().y(), taken.center().z()) < apart) {
+                    overlaps = true;
+                    break;
+                }
+            }
+            if (!overlaps) {
+                out.add(c);
+            }
+        }
+        return out;
+    }
+
+    private void announceEntityHits(class_746 self, List<EntityHit> hits) {
+        double px = self.method_23317();
+        double py = self.method_23318();
+        double pz = self.method_23321();
+        List<EntityHit> fresh = new ArrayList<>();
+        for (EntityHit hit : hits) {
+            Body c = hit.cluster().center();
+            // Mobs drift, so anything of the same kind within 24 blocks of an
+            // earlier announcement is that same farm.
+            boolean known = false;
+            for (EntityAlert a : this.entityAlerts) {
+                if (a.group().equals(hit.group()) && distSq(a.x(), a.y(), a.z(), c.x(), c.y(), c.z()) < 24.0 * 24.0) {
+                    known = true;
+                    break;
+                }
+            }
+            if (known || Math.sqrt(distSq(c.x(), c.y(), c.z(), px, py, pz)) < this.minDistance.getValue()) {
+                continue;
+            }
+            if (this.entityAlerts.size() >= 300) {
+                this.entityAlerts.remove(0);
+            }
+            this.entityAlerts.add(new EntityAlert(hit.group(), c.x(), c.y(), c.z()));
+            for (Body b : hit.cluster().members()) {
+                this.mark(hit.family(), (int) Math.floor(b.x()), (int) Math.floor(b.y()), (int) Math.floor(b.z()));
+            }
+            fresh.add(hit);
+        }
+        if (fresh.isEmpty()) {
+            return;
+        }
+        fresh.sort(Comparator.comparingDouble(h -> distSq(h.cluster().center().x(), h.cluster().center().y(), h.cluster().center().z(), px, py, pz)));
+        for (int i = 0; i < fresh.size(); i++) {
+            EntityHit hit = fresh.get(i);
+            Body c = hit.cluster().center();
+            int bx = (int) Math.floor(c.x());
+            int by = (int) Math.floor(c.y());
+            int bz = (int) Math.floor(c.z());
+            double dx = c.x() - px;
+            double dz = c.z() - pz;
+            double distance = Math.sqrt(distSq(c.x(), c.y(), c.z(), px, py, pz));
+            if (i == 0) {
+                this.stopAutoRtp(hit.label(), bx, by, bz, distance, dx, dz);
+                this.offerTarget(hit.label(), bx, by, bz, distance);
+            }
+            if (i >= STASH_ANNOUNCE_MAX) {
+                continue;
+            }
+            int shown = (int) Math.round(distance);
+            String direction = compass(dx, dz);
+            if (this.chat.isEnabled()) {
+                this.say("§6[FarmFinder]§r §e" + hit.label() + "§r §7" + shown + "m " + direction
+                        + " §8(" + bx + ", " + by + ", " + bz + ")§r §7- " + hit.detail());
+            }
+            if (this.toast.isEnabled()
+                    && Cyemer.getInstance().getModuleManager().getModule("Notifications") instanceof Notifications notifications) {
+                notifications.info("Farm Finder", hit.label() + " · " + shown + "m " + direction);
+            }
+            if (i == 0 && this.ping.isEnabled()) {
+                class_1144 manager = this.mc.method_1483();
+                if (manager != null) {
+                    manager.method_4873(class_1109.method_47978(class_3417.field_14622, 1.6F));
+                }
+            }
+        }
+        if (fresh.size() > STASH_ANNOUNCE_MAX) {
+            this.say("§6[FarmFinder]§r §e+" + (fresh.size() - STASH_ANNOUNCE_MAX) + " more mob farms§r §7in range, highlighted");
+        }
+    }
+
+    /**
+     * Sugar cane, cactus, bamboo and kelp grow by adding a block on top of
+     * themselves, which arrives as a new block rather than a state change.
+     * The server never sends their age ticking up, only that new block.
+     */
+    private Source growth(class_2338 pos, class_2680 before, class_2248 grown) {
+        Source source = growthSources().get(grown);
+        class_638 world = this.mc.field_1687;
+        if (source == null || world == null) {
+            return null;
+        }
+        boolean wasOpen = before.method_26215() || before.method_26227().method_15767(class_3486.field_15517);
+        if (!wasOpen) {
+            return null;
+        }
+        class_2248 below = world.method_8320(this.probe.method_10103(pos.method_10263(), pos.method_10264() - 1, pos.method_10260())).method_26204();
+        return growthSources().get(below) == source ? source : null;
+    }
+
     private void resetStashes() {
         this.stashAlerts.clear();
         this.flaggedSpawners.clear();
+        this.entityAlerts.clear();
+        this.tracks.clear();
         this.lastStashSignature = 0L;
         this.lastStashCount = -1;
         this.stashPositions = new HashSet<>();
@@ -1034,7 +1413,7 @@ public class FarmFinder extends Module {
         if (!this.autoRtp.isEnabled()) {
             return;
         }
-        this.autoRtp.setEnabled(false);
+        AutoRtp.stopAll();
         this.say("§6[FarmFinder]§r §cAutoRTP stopped§r §7- " + label + " "
                 + (int) Math.round(distance) + "m " + compass(dx, dz) + " §8(" + x + ", " + y + ", " + z + ")");
         if (Cyemer.getInstance().getModuleManager().getModule("Notifications") instanceof Notifications notifications) {
@@ -1346,24 +1725,16 @@ public class FarmFinder extends Module {
         return dx * dx + dy * dy + dz * dz;
     }
 
-    /**
-     * Sent as a command, not chat. A message starting with a slash that goes
-     * through the chat path is posted to chat as literal text; the chat screen
-     * strips the slash and routes commands through method_45730 instead, so
-     * this does the same. Accepts the setting with or without its slash.
-     */
+    /** Sent as a command, not chat; see AutoRtp.send. */
     private void sendRtp() {
-        if (this.mc.field_1724 == null || this.mc.field_1724.field_3944 == null) {
-            return;
+        AutoRtp.send(this.rtpCommand.getValue());
+    }
+
+    /** Quietly turns AutoRTP off; called when another module's find stops every AutoRTP. */
+    public void cancelAutoRtp() {
+        if (this.autoRtp.isEnabled()) {
+            this.autoRtp.setEnabled(false);
         }
-        String command = this.rtpCommand.getValue() == null ? "" : this.rtpCommand.getValue().trim();
-        while (command.startsWith("/")) {
-            command = command.substring(1);
-        }
-        if (command.isEmpty()) {
-            return;
-        }
-        this.mc.field_1724.field_3944.method_45730(command);
     }
 
     private void say(String message) {
