@@ -47,6 +47,9 @@ public class ClickGUIModule extends Module {
 
     public ClickGUIModule() {
         super("ClickGUI", "Opens the ClickGUI interface", Category.CLIENT);
+        // Right Shift out of the box, so a fresh install with no config opens
+        // the GUI and the Keybind setting shows it. A config can still rebind it.
+        this.setKeyCode(org.lwjgl.glfw.GLFW.GLFW_KEY_RIGHT_SHIFT);
         ensureThemesInitialized();
         theme = new ModeSetting(
             "Theme",

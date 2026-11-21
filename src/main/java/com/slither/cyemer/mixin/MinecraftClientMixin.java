@@ -56,11 +56,11 @@ public abstract class MinecraftClientMixin {
                 if (allowKeybinds) {
                     for (Module module : Cyemer.getInstance().getModuleManager().getModules()) {
                         int key = module.getKeyCode();
-                        if (key == -1) {
-                            String moduleName = module.getName();
-                            if ("ClickGUI".equalsIgnoreCase(moduleName)) {
-                                key = 344;
-                            }
+                        // An unbound ClickGUI still opens on Right Shift, so it can never be
+                        // locked out. 0 is not a real GLFW key: it is what a config entry with
+                        // no saved key loads as, and counts as unbound too.
+                        if ((key == -1 || key == 0) && "ClickGUI".equalsIgnoreCase(module.getName())) {
+                            key = 344;
                         }
 
                         if (key != -1) {
