@@ -2,6 +2,7 @@ package com.slither.cyemer.mixin;
 
 import com.slither.cyemer.Cyemer;
 import com.slither.cyemer.module.implementation.donutsmp.FarmFinder;
+import com.slither.cyemer.module.implementation.donutsmp.SpotFinder;
 import com.slither.cyemer.module.implementation.render.BlockESP;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
@@ -43,6 +44,10 @@ public class ClientWorldMixin {
         BlockESP esp = BlockESP.getInstance();
         if (esp != null && esp.isEnabled()) {
             esp.onBlockUpdate(pos, state);
+        }
+        SpotFinder spots = SpotFinder.getInstance();
+        if (spots != null && spots.isEnabled()) {
+            spots.onBlockUpdate(pos);
         }
     }
 }
