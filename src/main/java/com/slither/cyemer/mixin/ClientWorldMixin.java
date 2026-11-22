@@ -1,9 +1,8 @@
 package com.slither.cyemer.mixin;
 
 import com.slither.cyemer.Cyemer;
-import com.slither.cyemer.module.implementation.donutsmp.FarmFinder;
-import com.slither.cyemer.module.implementation.donutsmp.SpotFinder;
-import com.slither.cyemer.module.implementation.render.BlockESP;
+import com.slither.cyemer.event.BlockUpdateListener;
+import com.slither.cyemer.module.Module;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.class_2338;
@@ -36,18 +35,22 @@ public class ClientWorldMixin {
         if (Cyemer.selfDestructed) {
             return;
         }
-        FarmFinder finder = FarmFinder.getInstance();
-        if (finder != null && finder.isEnabled()) {
-            class_638 world = (class_638)(Object)this;
-            finder.onBlockUpdate(pos, world.method_8320(pos), state);
+        Cyemer cyemer = Cyemer.getInstance();
+        if (cyemer == null || cyemer.getModuleManager() == null) {
+            return;
         }
-        BlockESP esp = BlockESP.getInstance();
-        if (esp != null && esp.isEnabled()) {
-            esp.onBlockUpdate(pos, state);
-        }
-        SpotFinder spots = SpotFinder.getInstance();
-        if (spots != null && spots.isEnabled()) {
-            spots.onBlockUpdate(pos);
+        class_2680 before = null;
+        for (Module module : cyemer.getModuleManager().getModules()) {
+            if (module.isEnabled() && module instanceof BlockUpdateListener listener) {
+                if (before == null) {
+                    before = ((class_638)(Object)this).method_8320(pos);
+                }
+                try {
+                    listener.onBlockUpdate(pos, before, state);
+                } catch (RuntimeException e) {
+                    // one module's bug must not drop the block update for the game
+                }
+            }
         }
     }
 }

@@ -4,6 +4,7 @@ import com.slither.cyemer.Cyemer;
 import com.slither.cyemer.friend.FriendHelper;
 import com.slither.cyemer.friend.FriendKeybindManager;
 import com.slither.cyemer.module.Module;
+import com.slither.cyemer.util.HotReload;
 import com.slither.cyemer.util.ModuleAccess;
 import com.slither.cyemer.util.Renderer;
 import java.util.HashMap;
@@ -45,6 +46,7 @@ public abstract class MinecraftClientMixin {
     )
     private void onTick(CallbackInfo ci) {
         if (!Cyemer.selfDestructed) {
+            HotReload.tick(); // a requested reload runs here, before any module code
             class_310 client = (class_310)(Object)this;
             if (client.field_1724 != null) {
                 if (this.wasPressedMap == null) {

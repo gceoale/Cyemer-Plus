@@ -1,6 +1,7 @@
 package com.slither.cyemer.module.implementation.donutsmp;
 
 import com.slither.cyemer.Cyemer;
+import com.slither.cyemer.event.BlockUpdateListener;
 import com.slither.cyemer.module.BooleanSetting;
 import com.slither.cyemer.module.Category;
 import com.slither.cyemer.module.ColorSetting;
@@ -73,7 +74,7 @@ import net.minecraft.class_9799;
  * crosshair is on the block it means to break. Vanilla sends every packet.
  */
 @Environment(EnvType.CLIENT)
-public class SpotFinder extends Module {
+public class SpotFinder extends Module implements BlockUpdateListener {
     private static final int BAD_WALL = 1;
     private static final int BAD_INSIDE = 2;
     private static final long SCAN_BUDGET_NS = 2_000_000L;
@@ -101,6 +102,8 @@ public class SpotFinder extends Module {
     private final ModeSetting seal = new ModeSetting("Seal Entrance", "Inside", "Outside", "Off");
     private final SliderSetting minHealth = new SliderSetting("Stop Below HP", 8.0, 0.0, 19.0, 0);
     private final BooleanSetting etaHud = new BooleanSetting("ETA HUD", true);
+    /** Shows what Auto Mine would dig, for digging it yourself. */
+    private final BooleanSetting highlight = new BooleanSetting("Highlight Mode", false);
 
     private static final class ChunkInfo {
         final class_2818 chunk;
@@ -177,6 +180,23 @@ public class SpotFinder extends Module {
     private double lastPosY = Double.NaN;
     private double lastPosZ = Double.NaN;
 
+    // Highlight Mode
+    private Spot guideSpot = null;
+    private Door guideDoor = null;
+    private FarmRoute guideSearch = null;
+    private List<FarmRoute.Step> guidePath = List.of();
+    private boolean guidePartial = false;
+    private boolean guideFailed = false;
+    private long guidePlannedAt = 0L;
+    private int guideIndex = 0;
+    private int[] guideNext = null;
+    private List<int[]> guideRoom = List.of();
+    private List<int[]> guideSeal = List.of();
+    private int guideRouteLeft = 0;
+    private int guideRoomLeft = 0;
+    private int guideLayer = 0;
+    private double guideEta = Double.NaN;
+
     // ETA: predicted seconds left, scaled by how fast the work has really gone so far.
     private long jobStarted = 0L;
     private double eta = Double.NaN;
@@ -204,6 +224,7 @@ public class SpotFinder extends Module {
         this.addSetting(this.tracer);
         this.addSetting(this.listSpots);
         this.addSetting(this.autoMine);
+        this.addSetting(this.highlight);
         this.addSetting(this.turnSpeed);
         this.addSetting(this.autoWalk);
         this.addSetting(this.bestTool);
@@ -226,6 +247,7 @@ public class SpotFinder extends Module {
     public void onDisable() {
         this.stopMining();
         this.forgetJob();
+        this.clearGuide();
         this.wasAuto = false;
         this.reset();
     }
@@ -262,6 +284,7 @@ public class SpotFinder extends Module {
             this.lastWorld = world;
             this.stopMining(); // a spot in another world means nothing here
             this.forgetJob();
+            this.clearGuide();
             this.unreachable.clear();
             this.reset();
         }
@@ -326,6 +349,16 @@ public class SpotFinder extends Module {
             if (this.mining != null) {
                 this.say("§7Auto Mine paused. Turn it back on to carry on with this spot (turn SpotFinder off to forget it)");
             }
+        }
+
+        if (this.highlight.isEnabled() && !this.autoMine.isEnabled()) {
+            try {
+                this.tickGuide(world, self);
+            } catch (RuntimeException e) {
+                this.clearGuide();
+            }
+        } else if (this.guideSpot != null) {
+            this.clearGuide();
         }
 
         if (this.listSpots.isEnabled()) {
@@ -580,6 +613,14 @@ public class SpotFinder extends Module {
         }
         Door d = this.doors.get(this.doorTry);
         this.door = d;
+        int[] goal = this.goalFor(s, d);
+        this.walker = new DigWalker(this, this.keys, this.turnSpeed::getValue, this.bestTool::isEnabled, goal[0], goal[1], goal[2],
+                this.rulesFor(s, d, this.noMine));
+        this.phase = Phase.TRAVEL;
+    }
+
+    /** The room and its walls are off limits to a route, except the door: one wide, two tall, through the wall. */
+    private FarmRoute.Dig rulesFor(Spot s, Door d, LongOpenHashSet banned) {
         int t = this.thickness();
         int floor = s.y();
         int level = doorLevel(s);
@@ -588,18 +629,18 @@ public class SpotFinder extends Module {
             allowed.add(FarmRoute.key(d.x() - k * d.dx(), level, d.z() - k * d.dz()));
             allowed.add(FarmRoute.key(d.x() - k * d.dx(), level + 1, d.z() - k * d.dz()));
         }
-        boolean walkIn = s.h() >= 2;
-        if (walkIn) {
+        if (s.h() >= 2) {
             allowed.add(FarmRoute.key(d.x(), level, d.z()));
             allowed.add(FarmRoute.key(d.x(), level + 1, d.z()));
         }
-        FarmRoute.Dig rules = new FarmRoute.Dig(s.x() - t, floor - t, s.z() - t,
-                s.x() + s.lx() - 1 + t, floor + s.h() - 1 + t, s.z() + s.lz() - 1 + t, allowed, this.noMine);
-        // Into the room when it is tall enough to stand in, else into the doorway.
-        int gx = walkIn ? d.x() : d.x() - d.dx();
-        int gz = walkIn ? d.z() : d.z() - d.dz();
-        this.walker = new DigWalker(this, this.keys, this.turnSpeed::getValue, this.bestTool::isEnabled, gx, level, gz, rules);
-        this.phase = Phase.TRAVEL;
+        return new FarmRoute.Dig(s.x() - t, floor - t, s.z() - t,
+                s.x() + s.lx() - 1 + t, floor + s.h() - 1 + t, s.z() + s.lz() - 1 + t, allowed, banned);
+    }
+
+    /** Where the route ends: in the room when it is tall enough to stand in, else in the doorway. */
+    private int[] goalFor(Spot s, Door d) {
+        boolean walkIn = s.h() >= 2;
+        return new int[]{walkIn ? d.x() : d.x() - d.dx(), doorLevel(s), walkIn ? d.z() : d.z() - d.dz()};
     }
 
     /** A door on each side, at the point of that side nearest us; nearest first. */
@@ -1358,6 +1399,223 @@ public class SpotFinder extends Module {
         return out;
     }
 
+    // ---- Highlight Mode ----
+
+    /**
+     * Highlight Mode: the plan Auto Mine would follow, shown instead of done.
+     * Outside the room, the dig route from here to the nearest spot's door,
+     * every block on it still to break outlined and the next one in white.
+     * In the room, the top layer that still has blocks (the room is dug top
+     * down, like Auto Mine does it). Then, in green, where a block goes to
+     * wall the door up. You do the digging; it re-plans if you leave the
+     * route.
+     */
+    private void tickGuide(class_638 world, class_746 self) {
+        Spot s = this.mining != null ? this.mining : (this.spots.isEmpty() ? null : this.spots.get(0));
+        if (s == null) {
+            this.clearGuide();
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (!s.equals(this.guideSpot)) {
+            this.clearGuide();
+            this.guideSpot = s;
+            this.guideDoor = this.door != null && s.equals(this.mining) ? this.door : this.doorsFor(s, self.method_23317(), self.method_23321()).get(0);
+            this.say("§7Highlight Mode: dig the outlined blocks (white first) down to " + this.describe(s, self));
+        }
+        Door d = this.guideDoor;
+        if (this.insideRoom(self, s)) {
+            this.guidePath = List.of();
+            this.guideSearch = null;
+        } else if (this.guideSearch != null) {
+            FarmRoute.Status status = this.guideSearch.step(3_000_000L);
+            if (status != FarmRoute.Status.SEARCHING) {
+                this.guidePath = status == FarmRoute.Status.FAILED ? List.of() : this.guideSearch.path();
+                this.guidePartial = status == FarmRoute.Status.PARTIAL;
+                this.guideFailed = status == FarmRoute.Status.FAILED;
+                this.guideSearch = null;
+                this.guidePlannedAt = now;
+                this.guideIndex = 0;
+            }
+        } else if (self.method_24828() && this.guideNeedsPlan(self, now)) {
+            int[] g = this.goalFor(s, d);
+            this.guideSearch = new FarmRoute(world, (int) Math.floor(self.method_23317()), (int) Math.floor(self.method_23318() + 0.01),
+                    (int) Math.floor(self.method_23321()), g[0], g[1], g[2], this.rulesFor(s, d, new LongOpenHashSet()));
+        }
+        if (this.ticks % 10 == 0) {
+            this.refreshGuide(world, self, s, d);
+        }
+    }
+
+    private boolean guideNeedsPlan(class_746 self, long now) {
+        if (this.guidePath.isEmpty()) {
+            return now - this.guidePlannedAt > (this.guideFailed ? 10_000L : 0L);
+        }
+        if (now - this.guidePlannedAt > 20_000L) {
+            return true; // the world changed under it (or you dug your own way): plan again from here
+        }
+        double best = Double.MAX_VALUE;
+        for (FarmRoute.Step step : this.guidePath) {
+            double dx = step.x() + 0.5 - self.method_23317();
+            double dy = step.y() - self.method_23318();
+            double dz = step.z() + 0.5 - self.method_23321();
+            best = Math.min(best, dx * dx + dy * dy + dz * dz);
+        }
+        if (best > 9.0) {
+            return true; // left the route
+        }
+        FarmRoute.Step end = this.guidePath.get(this.guidePath.size() - 1);
+        double ex = end.x() + 0.5 - self.method_23317();
+        double ez = end.z() + 0.5 - self.method_23321();
+        return this.guidePartial && ex * ex + ez * ez < 9.0 && Math.abs(end.y() - self.method_23318()) < 3.0;
+    }
+
+    /** Counts, the room layer to show, the opening to seal, and the time it should all take by hand. */
+    private void refreshGuide(class_638 world, class_746 self, Spot s, Door d) {
+        DigKit.Clock clock = new DigKit.Clock(this.mc, world);
+        double seconds = 0.0;
+        int routeLeft = 0;
+        double nearest = Double.MAX_VALUE;
+        for (int i = 0; i < this.guidePath.size(); i++) {
+            FarmRoute.Step step = this.guidePath.get(i);
+            double dx = step.x() + 0.5 - self.method_23317();
+            double dy = step.y() - self.method_23318();
+            double dz = step.z() + 0.5 - self.method_23321();
+            double dd = dx * dx + dy * dy + dz * dz;
+            if (dd < nearest) {
+                nearest = dd;
+                this.guideIndex = i;
+            }
+        }
+        int[] next = null;
+        for (int i = this.guideIndex; i < this.guidePath.size(); i++) {
+            int[] mined = this.guidePath.get(i).mined();
+            if (mined == null) {
+                continue;
+            }
+            for (int k = 0; k + 2 < mined.length; k += 3) {
+                if (DigKit.blocking(world, this.probe, mined[k], mined[k + 1], mined[k + 2])) {
+                    routeLeft++;
+                    seconds += clock.seconds(world.method_8320(this.probe), this.probe);
+                    if (next == null) {
+                        next = new int[]{mined[k], mined[k + 1], mined[k + 2]};
+                    }
+                }
+            }
+        }
+        this.guideNext = next;
+
+        int[] levels = layers(s);
+        int top = s.y() + s.h() - 1;
+        List<int[]> show = new ArrayList<>();
+        int roomLeft = 0;
+        this.guideLayer = 0;
+        for (int i = 0; i < levels.length; i++) {
+            int lo = levels[i];
+            int hi = i == 0 ? top : levels[i - 1] - 1;
+            List<int[]> here = new ArrayList<>();
+            for (int x = s.x(); x < s.x() + s.lx(); x++) {
+                for (int y = lo; y <= hi; y++) {
+                    for (int z = s.z(); z < s.z() + s.lz(); z++) {
+                        if (this.minable(world, x, y, z)) {
+                            here.add(new int[]{x, y, z});
+                            seconds += clock.seconds(world.method_8320(this.probe), this.probe);
+                        }
+                    }
+                }
+            }
+            roomLeft += here.size();
+            if (show.isEmpty() && !here.isEmpty()) {
+                show = here;
+                this.guideLayer = i + 1;
+            }
+        }
+        double px = self.method_23317();
+        double py = self.method_23318();
+        double pz = self.method_23321();
+        show.sort(Comparator.comparingDouble(c -> (c[0] + 0.5 - px) * (c[0] + 0.5 - px) + (c[1] - py) * (c[1] - py) + (c[2] + 0.5 - pz) * (c[2] + 0.5 - pz)));
+        this.guideRoom = show.size() > 2000 ? new ArrayList<>(show.subList(0, 2000)) : show;
+
+        List<int[]> seal = new ArrayList<>();
+        boolean inside = this.insideRoom(self, s);
+        if (d != null && !"Off".equals(this.seal.getCurrentMode()) && (inside || roomLeft == 0)) {
+            int level = doorLevel(s);
+            for (int y = level; y <= Math.min(level + 1, top); y++) {
+                int x = d.x() - d.dx();
+                int z = d.z() - d.dz();
+                if (!DigKit.solid(world, this.probe, x, y, z)) {
+                    seal.add(new int[]{x, y, z});
+                }
+            }
+        }
+        this.guideSeal = seal;
+        this.guideRouteLeft = inside ? 0 : routeLeft;
+        this.guideRoomLeft = roomLeft;
+        this.guideEta = seconds;
+    }
+
+    private void clearGuide() {
+        this.guideSpot = null;
+        this.guideDoor = null;
+        this.guideSearch = null;
+        this.guidePath = List.of();
+        this.guideRoom = List.of();
+        this.guideSeal = List.of();
+        this.guideNext = null;
+        this.guideFailed = false;
+        this.guidePlannedAt = 0L;
+        this.guideRouteLeft = 0;
+        this.guideRoomLeft = 0;
+        this.guideEta = Double.NaN;
+    }
+
+    private boolean guiding() {
+        return this.highlight.isEnabled() && !this.autoMine.isEnabled() && this.guideSpot != null;
+    }
+
+    private void drawGuide(class_4587 matrices, class_4598 consumers, double cx, double cy, double cz, Color c) {
+        if (!this.guidePath.isEmpty()) {
+            this.drawRoute(matrices, consumers, this.guidePath, this.guideIndex + 1, this.guideNext, 1000, cx, cy, cz, c);
+        }
+        Color room = new Color(255, 170, 60);
+        for (int[] cell : this.guideRoom) {
+            double x = cell[0] - cx;
+            double y = cell[1] - cy;
+            double z = cell[2] - cz;
+            RenderUtils.drawBoxEsp(matrices, consumers, new class_238(x + 0.04, y + 0.04, z + 0.04, x + 0.96, y + 0.96, z + 0.96), room, 0.16F, true);
+        }
+        Color green = new Color(70, 230, 90);
+        for (int[] cell : this.guideSeal) {
+            double x = cell[0] - cx;
+            double y = cell[1] - cy;
+            double z = cell[2] - cz;
+            RenderUtils.drawBoxEsp(matrices, consumers, new class_238(x + 0.02, y + 0.02, z + 0.02, x + 0.98, y + 0.98, z + 0.98), green, 0.4F, true);
+        }
+    }
+
+    private void renderGuideHud(class_332 context) {
+        String what;
+        if (this.guideRoomLeft == 0) {
+            what = this.guideSeal.isEmpty() ? "Room done" : "Room done: put a block in the green opening";
+        } else if (this.guideRouteLeft > 0 || (!this.guidePath.isEmpty() && this.mc.field_1724 != null && !this.insideRoom(this.mc.field_1724, this.guideSpot))) {
+            what = "Dig the outlined route to the room";
+        } else if (this.guideSearch != null) {
+            what = "Planning the route...";
+        } else if (this.guideFailed && this.mc.field_1724 != null && !this.insideRoom(this.mc.field_1724, this.guideSpot)) {
+            what = "No safe route from here, move and it tries again";
+        } else {
+            int layers = layers(this.guideSpot).length;
+            what = layers > 1 ? "Mine the orange blocks, layer " + this.guideLayer + " of " + layers : "Mine the orange blocks";
+        }
+        String line1 = "Highlight · " + what + (this.guideSeal.isEmpty() || this.guideRoomLeft == 0 ? "" : " · then seal the green opening");
+        String line2 = this.guideRouteLeft + " on the route · " + this.guideRoomLeft + " in the room"
+                + (Double.isNaN(this.guideEta) || this.guideEta <= 0.0 ? "" : " · ~" + DigKit.time(this.guideEta) + " with your best tool");
+        int centerX = context.method_51421() / 2;
+        int y = context.method_51443() / 2 + 46;
+        this.centered(context, line1, centerX, y, this.color.getValue().getRGB() | 0xFF000000);
+        this.centered(context, line2, centerX, y + 10, 0xFFAAAAAA);
+    }
+
     // ---- ETA ----
 
     /**
@@ -1437,7 +1695,14 @@ public class SpotFinder extends Module {
 
     @Override
     public void onRender(class_332 context, float tickDelta) {
-        if (!this.etaHud.isEnabled() || !this.autoMine.isEnabled() || this.mining == null || this.mc.field_1724 == null || Cyemer.selfDestructed) {
+        if (!this.etaHud.isEnabled() || this.mc.field_1724 == null || Cyemer.selfDestructed) {
+            return;
+        }
+        if (this.guiding()) {
+            this.renderGuideHud(context);
+            return;
+        }
+        if (!this.autoMine.isEnabled() || this.mining == null) {
             return;
         }
         String what = switch (this.phase) {
@@ -1530,6 +1795,11 @@ public class SpotFinder extends Module {
     }
 
     /** From ClientWorldMixin: a changed block in the graded layers regrades its chunk. */
+    @Override
+    public void onBlockUpdate(class_2338 pos, class_2680 before, class_2680 after) {
+        this.onBlockUpdate(pos);
+    }
+
     public void onBlockUpdate(class_2338 pos) {
         if (!this.isEnabled() || Cyemer.selfDestructed) {
             return;
@@ -1683,7 +1953,7 @@ public class SpotFinder extends Module {
     public void onWorldRender(class_4587 matrices, float tickDelta) {
         List<Spot> shown = this.spots;
         class_746 self = this.mc.field_1724;
-        if ((shown.isEmpty() && this.mining == null) || self == null || Cyemer.selfDestructed) {
+        if ((shown.isEmpty() && this.mining == null && this.guideSpot == null) || self == null || Cyemer.selfDestructed) {
             return;
         }
         class_243 cam = this.mc.field_1773.method_19418().method_71156();
@@ -1717,7 +1987,10 @@ public class SpotFinder extends Module {
             }
             DigWalker w = this.walker;
             if (w != null && this.phase == Phase.TRAVEL) {
-                this.drawRoute(matrices, consumers, w, cx, cy, cz, c);
+                this.drawRoute(matrices, consumers, w.path(), w.index(), w.target(), 24, cx, cy, cz, c);
+            }
+            if (this.guiding()) {
+                this.drawGuide(matrices, consumers, cx, cy, cz, c);
             }
             Aim target = this.mineTarget;
             if (target != null) {
@@ -1727,7 +2000,7 @@ public class SpotFinder extends Module {
                 RenderUtils.drawBoxEsp(matrices, consumers, new class_238(tx + 0.02, ty + 0.02, tz + 0.02, tx + 0.98, ty + 0.98, tz + 0.98),
                         Color.WHITE, 0.35F, true);
             }
-            if (this.tracer.isEnabled()) {
+            if (this.tracer.isEnabled() && (this.mining != null || !shown.isEmpty())) {
                 Spot s = this.mining != null ? this.mining : shown.get(0);
                 class_243 look = self.method_5828(tickDelta);
                 RenderUtils.drawLine(matrices, consumers, new class_243(look.field_1352 * 0.6, look.field_1351 * 0.6, look.field_1350 * 0.6),
@@ -1742,18 +2015,18 @@ public class SpotFinder extends Module {
      * next stretch still has to break outlined and the one being broken
      * now in white.
      */
-    private void drawRoute(class_4587 matrices, class_4598 consumers, DigWalker w, double cx, double cy, double cz, Color c) {
-        List<FarmRoute.Step> path = w.path();
+    private void drawRoute(class_4587 matrices, class_4598 consumers, List<FarmRoute.Step> path, int index, int[] t, int ahead,
+                           double cx, double cy, double cz, Color c) {
         class_638 world = this.mc.field_1687;
         if (path.isEmpty() || world == null) {
             return;
         }
-        int from = Math.max(0, w.index() - 1);
+        int from = Math.max(0, index - 1);
         int to = Math.min(path.size() - 1, from + 400);
         for (int i = from; i < to; i++) {
             RenderUtils.drawLine(matrices, consumers, stepPoint(path.get(i), cx, cy, cz), stepPoint(path.get(i + 1), cx, cy, cz), c, 0.9F, true);
         }
-        for (int i = Math.max(1, w.index()); i < path.size() && i < w.index() + 24; i++) {
+        for (int i = Math.max(1, index); i < path.size() && i < index + ahead; i++) {
             int[] mined = path.get(i).mined();
             if (mined == null) {
                 continue;
@@ -1768,7 +2041,6 @@ public class SpotFinder extends Module {
                 RenderUtils.drawBoxEsp(matrices, consumers, new class_238(bx + 0.05, by + 0.05, bz + 0.05, bx + 0.95, by + 0.95, bz + 0.95), c, 0.12F, true);
             }
         }
-        int[] t = w.target();
         if (t != null) {
             double tx = t[0] - cx;
             double ty = t[1] - cy;

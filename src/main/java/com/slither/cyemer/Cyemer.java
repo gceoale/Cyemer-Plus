@@ -4,6 +4,7 @@ import com.slither.cyemer.config.ConfigManager;
 import com.slither.cyemer.hud.ClientEventHandler;
 import com.slither.cyemer.hud.HUDManager;
 import com.slither.cyemer.manager.ModuleManager;
+import com.slither.cyemer.util.HotReload;
 import java.util.Timer;
 import java.util.TimerTask;
 import net.fabricmc.api.ClientModInitializer;
@@ -29,6 +30,7 @@ public class Cyemer implements ClientModInitializer {
         this.hudManager = HUDManager.getInstance();
         ClientEventHandler.init();
         this.configManager.load("default");
+        HotReload.snapshot();
         this.startMsTimer();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             if (this.msTimer != null) {

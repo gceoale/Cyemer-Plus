@@ -15,6 +15,8 @@ import org.lwjgl.glfw.GLFW;
 
 @Environment(EnvType.CLIENT)
 public class Module {
+    /** Set by HotReload while it swaps modules, so the swap does not pop an Enabled/Disabled notice for each one. */
+    public static volatile boolean quiet = false;
     protected class_310 mc = class_310.method_1551();
     private String name;
     private String description;
@@ -104,7 +106,7 @@ public class Module {
                 this.onDisable();
             }
 
-            if (!this.getName().equals("Notifications")) {
+            if (!quiet && !this.getName().equals("Notifications")) {
                 try {
                     if (Cyemer.getInstance().getModuleManager().getModule("Notifications") instanceof Notifications notifications) {
                         if (this.enabled) {

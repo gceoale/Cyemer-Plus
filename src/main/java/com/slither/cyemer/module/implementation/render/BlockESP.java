@@ -1,6 +1,7 @@
 package com.slither.cyemer.module.implementation.render;
 
 import com.slither.cyemer.Cyemer;
+import com.slither.cyemer.event.BlockUpdateListener;
 import com.slither.cyemer.module.BlockListSetting;
 import com.slither.cyemer.module.BooleanSetting;
 import com.slither.cyemer.module.Category;
@@ -65,7 +66,7 @@ import net.minecraft.class_9799;
  * is something no ore could sit in.
  */
 @Environment(EnvType.CLIENT)
-public class BlockESP extends Module {
+public class BlockESP extends Module implements BlockUpdateListener {
     private static final int SCAN_RADIUS = 32;           // chunks; anything loaded is inside this
     private static final long SCAN_BUDGET_NS = 2_000_000L;
     private static final int PER_CHUNK_CAP = 4096;        // picking stone should not eat all memory
@@ -491,6 +492,11 @@ public class BlockESP extends Module {
     }
 
     /** From ClientWorldMixin: a block in a loaded chunk changed. */
+    @Override
+    public void onBlockUpdate(class_2338 pos, class_2680 before, class_2680 after) {
+        this.onBlockUpdate(pos, after);
+    }
+
     public void onBlockUpdate(class_2338 pos, class_2680 state) {
         if (!this.isEnabled() || Cyemer.selfDestructed) {
             return;

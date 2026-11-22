@@ -98,13 +98,15 @@ tasks.register('installMod') {
 			}
 		}
 
+		// Written beside it under a hidden name, then renamed over it in one
+		// step: a running game (and HotReload watching the file) only ever
+		// sees the old jar or the whole new one, never a half-written one.
 		def dest = new File(destDir, jar.name)
-		java.nio.file.Files.copy(
-			jar.toPath(),
-			dest.toPath(),
-			java.nio.file.StandardCopyOption.REPLACE_EXISTING
-		)
-		logger.lifecycle("installMod: ${jar.name} -> ${destDir} (restart Minecraft to load it)")
+		def part = new File(destDir, ".${jar.name}.part")
+		java.nio.file.Files.copy(jar.toPath(), part.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+		java.nio.file.Files.move(part.toPath(), dest.toPath(),
+			java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE)
+		logger.lifecycle("installMod: ${jar.name} -> ${destDir} (HotReload loads it in-game if it is on; otherwise restart Minecraft)")
 	}
 }
 

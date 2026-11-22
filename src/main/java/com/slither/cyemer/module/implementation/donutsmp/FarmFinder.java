@@ -1,6 +1,7 @@
 package com.slither.cyemer.module.implementation.donutsmp;
 
 import com.slither.cyemer.Cyemer;
+import com.slither.cyemer.event.BlockUpdateListener;
 import com.slither.cyemer.module.BooleanSetting;
 import com.slither.cyemer.module.Category;
 import com.slither.cyemer.module.ColorSetting;
@@ -97,7 +98,7 @@ import net.minecraft.class_9799;
  * path, the blocks to break and the target are drawn in the world.
  */
 @Environment(EnvType.CLIENT)
-public class FarmFinder extends Module {
+public class FarmFinder extends Module implements BlockUpdateListener {
     /** Floor between any two alerts, so flying over a mega-farm cannot flood chat. */
     private static final long GLOBAL_GAP_MS = 300L;
     /** Clusters unheard for this long are forgotten. */
