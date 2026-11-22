@@ -2,6 +2,7 @@ package com.slither.cyemer.module.implementation.donutsmp;
 
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -12,6 +13,7 @@ import net.fabricmc.api.Environment;
 import net.minecraft.class_2246;
 import net.minecraft.class_2248;
 import net.minecraft.class_2338;
+import net.minecraft.class_2346;
 import net.minecraft.class_2680;
 import net.minecraft.class_3486;
 import net.minecraft.class_3610;
@@ -30,6 +32,12 @@ import net.minecraft.class_638;
  *
  * The world is only safe to read on the client thread, so the search runs
  * there a slice at a time via step() rather than on a worker.
+ *
+ * With Dig rules (SpotFinder's Auto Mine, which walks the route itself) the
+ * goal is an exact cell, a box around it may only be entered through the
+ * cells it allows, mining is priced near walking, and safety is stricter:
+ * no water at all, nothing occupied beside lava, nothing mined under sand
+ * or gravel, and no pillaring.
  */
 @Environment(EnvType.CLIENT)
 final class FarmRoute {
@@ -46,12 +54,14 @@ final class FarmRoute {
     private static final int BAD_FLOOR = 32;   // hurts to stand on
     private static final int DANGER = 64;      // never occupy
     private static final int UNLOADED = 128;   // outside loaded chunks: unknown, treated as a wall
-    private static final int COST_SHIFT = 8;   // mining cost * 4, above the flag bits
+    private static final int FALLING = 256;    // sand, gravel: drops into a hole mined under it
+    private static final int COST_SHIFT = 9;   // mining cost * 4, above the flag bits
 
     private static final double INF = Double.POSITIVE_INFINITY;
     private static final int MAX_FALL = 3;              // more than 3 blocks starts costing hearts
     private static final int MAX_WATER_FALL = 24;
     private static final int MAX_EXPANSIONS = 40_000;
+    private static final int MAX_DIG_EXPANSIONS = 60_000;
     private static final int MARGIN = 40;
     private static final int Y_MARGIN = 24;
     // Strongly greedy. Tuned on synthetic worlds: at 1.6 a base 45 blocks down
@@ -67,6 +77,14 @@ final class FarmRoute {
     private static final double MINE_PER_HARDNESS = 0.6;
     private static final double MINE_PENALTY = 0.5;
     private static final double PILLAR_COST = 5.0;
+    // A dig to a room tunnels nearly the whole way, so mining is priced near
+    // walking. At the prices above every block dug costs more than the
+    // greedy heuristic gains back, and a 120-block dig floods the search.
+    // Here a tunnel step (2 blocks) is ~3.5 and a stair step ~5.3, both under
+    // WEIGHT times the distance they cover, so the search runs nearly straight.
+    private static final double DIG_MINE_BASE = 0.5;
+    private static final double DIG_MINE_PER_HARDNESS = 0.15;
+    private static final double DIG_MINE_PENALTY = 0.25;
     private static final double SQRT2 = Math.sqrt(2.0);
     private static final int[][] CARDINALS = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
     private static final int[][] DIAGONALS = {{1, 1}, {1, -1}, {-1, 1}, {-1, -1}};
@@ -78,6 +96,11 @@ final class FarmRoute {
     private final int gy;
     private final int gz;
     private final boolean allowMining;
+    private final Dig dig;
+    private final double mineBase;
+    private final double minePerHardness;
+    private final double minePenalty;
+    private final int maxExpansions;
     private final int minX;
     private final int maxX;
     private final int minY;
@@ -85,6 +108,7 @@ final class FarmRoute {
     private final int minZ;
     private final int maxZ;
     private final class_2338.class_2339 probe = new class_2338.class_2339();
+    private final class_2338.class_2339 near = new class_2338.class_2339();
     private final Long2IntOpenHashMap cells = new Long2IntOpenHashMap();
     private final Long2ObjectOpenHashMap<Node> nodes = new Long2ObjectOpenHashMap<>();
     private final PriorityQueue<Entry> open = new PriorityQueue<>((a, b) -> Double.compare(a.f(), b.f()));
@@ -117,12 +141,59 @@ final class FarmRoute {
 
     private record Entry(Node node, double f) {}
 
+    /**
+     * What a dig to a room must respect. Cells inside the box (the room and
+     * its walls) can be stood on but never mined or entered, except the
+     * allowed ones: the door. noMine holds cells the walker found it could
+     * not or should not break, so a re-plan goes round them.
+     */
+    static final class Dig {
+        final int minX;
+        final int minY;
+        final int minZ;
+        final int maxX;
+        final int maxY;
+        final int maxZ;
+        final LongOpenHashSet allowed;
+        final LongOpenHashSet noMine;
+
+        Dig(int minX, int minY, int minZ, int maxX, int maxY, int maxZ, LongOpenHashSet allowed, LongOpenHashSet noMine) {
+            this.minX = minX;
+            this.minY = minY;
+            this.minZ = minZ;
+            this.maxX = maxX;
+            this.maxY = maxY;
+            this.maxZ = maxZ;
+            this.allowed = allowed;
+            this.noMine = noMine;
+        }
+
+        boolean keptOut(int x, int y, int z) {
+            return x >= this.minX && x <= this.maxX && y >= this.minY && y <= this.maxY && z >= this.minZ && z <= this.maxZ
+                    && !this.allowed.contains(key(x, y, z));
+        }
+    }
+
     FarmRoute(class_638 world, int sx, int sy, int sz, int gx, int gy, int gz, boolean allowMining) {
+        this(world, sx, sy, sz, gx, gy, gz, allowMining, null);
+    }
+
+    /** A route that ends with the feet exactly at (gx, gy, gz), under the dig rules. */
+    FarmRoute(class_638 world, int sx, int sy, int sz, int gx, int gy, int gz, Dig dig) {
+        this(world, sx, sy, sz, gx, gy, gz, true, dig);
+    }
+
+    private FarmRoute(class_638 world, int sx, int sy, int sz, int gx, int gy, int gz, boolean allowMining, Dig dig) {
         this.world = world;
         this.gx = gx;
         this.gy = gy;
         this.gz = gz;
         this.allowMining = allowMining;
+        this.dig = dig;
+        this.mineBase = dig != null ? DIG_MINE_BASE : MINE_BASE;
+        this.minePerHardness = dig != null ? DIG_MINE_PER_HARDNESS : MINE_PER_HARDNESS;
+        this.minePenalty = dig != null ? DIG_MINE_PENALTY : MINE_PENALTY;
+        this.maxExpansions = dig != null ? MAX_DIG_EXPANSIONS : MAX_EXPANSIONS;
         this.minX = Math.min(sx, gx) - MARGIN;
         this.maxX = Math.max(sx, gx) + MARGIN;
         this.minZ = Math.min(sz, gz) - MARGIN;
@@ -174,7 +245,7 @@ final class FarmRoute {
             if (this.best == null || node.h < this.best.h) {
                 this.best = node;
             }
-            if (++this.expansions > MAX_EXPANSIONS) {
+            if (++this.expansions > this.maxExpansions) {
                 break;
             }
             this.expand(node);
@@ -230,6 +301,7 @@ final class FarmRoute {
             // there is no floor once we are in it.
             this.scratchCount = 0;
             double clear = this.need(tx, y, tz) + this.need(tx, y + 1, tz);
+            clear += this.fallRisk(n);
             if (clear < INF) {
                 double base = (ahead & WATER) != 0 ? 2.0 : 1.0;
                 long[] mined = this.takeScratch();
@@ -244,6 +316,7 @@ final class FarmRoute {
             if ((ahead & SOLID) != 0 && (ahead & BAD_FLOOR) == 0) {
                 this.scratchCount = 0;
                 double up = this.need(x, y + 2, z) + this.need(tx, y + 1, tz) + this.need(tx, y + 2, tz);
+                up += this.fallRisk(n);
                 if (up < INF) {
                     this.relax(n, tx, y + 1, tz, 2.0 + up, this.takeScratch(), false);
                 }
@@ -253,6 +326,7 @@ final class FarmRoute {
             // drop with nothing to mine is the forward move above.
             this.scratchCount = 0;
             double stair = this.need(tx, y - 1, tz) + this.need(tx, y, tz) + this.need(tx, y + 1, tz);
+            stair += this.fallRisk(n);
             if (stair > 0.0 && stair < INF && this.supported(tx, y - 1, tz)) {
                 this.relax(n, tx, y - 1, tz, 1.5 + stair, this.takeScratch(), false);
             }
@@ -278,9 +352,9 @@ final class FarmRoute {
             this.relax(n, x, y - 1, z, 1.5, null, false);
         } else if ((below & SOLID) != 0) {
             this.scratchCount = 0;
-            double dig = this.need(x, y - 1, z);
-            if (dig < INF) {
-                this.drop(n, x, y - 1, z, 1.0 + dig, this.takeScratch());
+            double down = this.need(x, y - 1, z);
+            if (down < INF) {
+                this.drop(n, x, y - 1, z, 1.0 + down, this.takeScratch());
             }
         }
 
@@ -288,7 +362,7 @@ final class FarmRoute {
         // considered while the target is still above us; offered everywhere,
         // every patch of open ground would grow a column of nodes to the top
         // of the search box and swamp it.
-        boolean wantUp = this.gy > y + 2;
+        boolean wantUp = this.dig == null && this.gy > y + 2;
         if (inWater || wantUp) {
             this.scratchCount = 0;
             double headroom = this.need(x, y + 2, z);
@@ -361,6 +435,12 @@ final class FarmRoute {
      * the block under our feet and the one over our head. Zero means arrived.
      */
     private double heuristic(int x, int y, int z) {
+        if (this.dig != null) {
+            double dx = x - this.gx;
+            double dy = y - this.gy;
+            double dz = z - this.gz;
+            return Math.sqrt(dx * dx + dy * dy + dz * dz);
+        }
         double dx = Math.max(0, Math.abs(x - this.gx) - 1);
         double dz = Math.max(0, Math.abs(z - this.gz) - 1);
         double dy = this.gy > y + 2 ? this.gy - (y + 2) : (this.gy < y - 1 ? (y - 1) - this.gy : 0);
@@ -392,6 +472,39 @@ final class FarmRoute {
         return cost;
     }
 
+    /**
+     * On a dig, a move that mines a block with sand or gravel on top drops
+     * it into the tunnel, onto the player's head if they are under it.
+     * Blocks the move mines anyway, and the cells we are standing in (the
+     * shaft we came down), are not a risk.
+     */
+    private double fallRisk(Node n) {
+        if (this.dig == null) {
+            return 0.0;
+        }
+        for (int i = 0; i < this.scratchCount; i++) {
+            long k = this.scratch[i];
+            int x = unpackX(k);
+            int y = unpackY(k) + 1;
+            int z = unpackZ(k);
+            if (x == n.x && z == n.z && (y == n.y || y == n.y + 1)) {
+                continue;
+            }
+            long above = key(x, y, z);
+            boolean minedToo = false;
+            for (int j = 0; j < this.scratchCount; j++) {
+                if (this.scratch[j] == above) {
+                    minedToo = true;
+                    break;
+                }
+            }
+            if (!minedToo && (this.cell(x, y, z) & FALLING) != 0) {
+                return INF;
+            }
+        }
+        return 0.0;
+    }
+
     private long[] takeScratch() {
         return this.scratchCount == 0 ? null : Arrays.copyOf(this.scratch, this.scratchCount);
     }
@@ -404,16 +517,21 @@ final class FarmRoute {
         if (!this.allowMining || (c & (DANGER | UNLOADED)) != 0 || (c & BREAKABLE) == 0) {
             return INF;
         }
-        double cost = (c >>> COST_SHIFT) / 4.0 + MINE_PENALTY;
+        double cost = (c >>> COST_SHIFT) / 4.0 + this.minePenalty;
         // Opening a block beside lava floods the tunnel with it; beside water
-        // it is only a nuisance.
+        // it is only a nuisance, unless we are digging the tunnel ourselves.
         for (int[] o : AROUND) {
             int n = this.cell(x + o[0], y + o[1], z + o[2]);
             if ((n & LAVA) != 0) {
                 return INF;
             }
-            if ((n & WATER) != 0 && (n & CLEAR) != 0) {
-                cost += 3.0;
+            if ((n & WATER) != 0) {
+                if (this.dig != null) {
+                    return INF;
+                }
+                if ((n & CLEAR) != 0) {
+                    cost += 3.0;
+                }
             }
         }
         return cost;
@@ -444,13 +562,20 @@ final class FarmRoute {
             return DANGER; // fire, soul fire
         }
         boolean water = fluid.method_15767(class_3486.field_15517);
+        if (this.dig != null && water) {
+            return WATER | DANGER; // no swimming on a dig: a flooded tunnel is no place to mine
+        }
+        boolean keptOut = this.dig != null && this.dig.keptOut(x, y, z);
 
         if (state.method_26220(this.world, this.probe).method_1110()) {
             // No collision, but slow or hurt to stand in: cobweb, berry bush,
             // powder snow, wither rose. Cheap to clear instead.
             if (block == class_2246.field_10343 || block == class_2246.field_16999
                     || block == class_2246.field_27879 || block == class_2246.field_10606) {
-                return miningBits(0.0F);
+                return keptOut ? DANGER : this.bits(0.0F);
+            }
+            if (this.dig != null && (keptOut || this.lavaBeside(x, y, z))) {
+                return DANGER; // never step into the room's walls, or stand next to lava
             }
             return CLEAR | (water ? WATER : 0);
         }
@@ -459,15 +584,30 @@ final class FarmRoute {
         if (block == class_2246.field_10092 || block == class_2246.field_10029 || block == class_2246.field_28048) {
             flags |= BAD_FLOOR; // magma, cactus, pointed dripstone
         }
-        return flags | miningBits(state.method_26214(this.world, this.probe));
+        if (block instanceof class_2346) {
+            flags |= FALLING;
+        }
+        if (keptOut || (this.dig != null && this.dig.noMine.contains(key(x, y, z)))) {
+            return flags; // can be stood on, never mined
+        }
+        return flags | this.bits(state.method_26214(this.world, this.probe));
+    }
+
+    private boolean lavaBeside(int x, int y, int z) {
+        for (int[] o : AROUND) {
+            if (this.world.method_8320(this.near.method_10103(x + o[0], y + o[1], z + o[2])).method_26227().method_15767(class_3486.field_15518)) {
+                return true;
+            }
+        }
+        return this.world.method_8320(this.near.method_10103(x, y - 1, z)).method_26227().method_15767(class_3486.field_15518);
     }
 
     /** BREAKABLE plus the mining cost for a block of this hardness, or nothing if it cannot be mined. */
-    static int miningBits(float hardness) {
+    private int bits(float hardness) {
         if (hardness < 0.0F || hardness > MAX_HARDNESS) {
             return 0;
         }
-        return BREAKABLE | ((int) Math.round((MINE_BASE + hardness * MINE_PER_HARDNESS) * 4.0) << COST_SHIFT);
+        return BREAKABLE | ((int) Math.round((this.mineBase + hardness * this.minePerHardness) * 4.0) << COST_SHIFT);
     }
 
     /** x in the top 26 bits, z in the next 26, y in the low 12; all signed. */
