@@ -4,6 +4,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import net.fabricmc.api.EnvType;
+import com.slither.cyemer.util.RotationManager;
 import net.fabricmc.api.Environment;
 import net.minecraft.class_1661;
 import net.minecraft.class_1747;
@@ -104,6 +105,41 @@ final class DigKit {
                 case USE -> options.field_1904;
             };
         }
+    }
+
+    /**
+     * Turns the camera toward a point the way a hand on a mouse does: an
+     * eased, frame-rate independent glide (RotationManager's FPS mode), not
+     * a constant-speed sweep that stops dead. Turn Speed 22 is a quick,
+     * smooth flick.
+     */
+    static void look(Object owner, class_243 point, double turnSpeed, boolean yawOnly) {
+        RotationManager.setRotationSupplier(owner, RotationManager.Priority.NORMAL, () -> point, Math.max(1.5, turnSpeed * 0.35),
+                RotationManager.RotationMode.FPS, 0.0, false, yawOnly);
+    }
+
+    /** Degrees between where the camera looks and the direction to a point. */
+    static double angleTo(class_746 self, class_243 eye, class_243 point) {
+        class_243 look = self.method_5828(1.0F);
+        double dx = point.field_1352 - eye.field_1352;
+        double dy = point.field_1351 - eye.field_1351;
+        double dz = point.field_1350 - eye.field_1350;
+        double len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (len < 1.0E-6) {
+            return 0.0;
+        }
+        double dot = (look.field_1352 * dx + look.field_1351 * dy + look.field_1350 * dz) / len;
+        return Math.toDegrees(Math.acos(Math.max(-1.0, Math.min(1.0, dot))));
+    }
+
+    /** A block with at least one side open to air or a non-solid block, the only kind that can be seen. */
+    static boolean exposed(class_638 world, class_2338.class_2339 probe, int x, int y, int z) {
+        for (int[] o : SIDES) {
+            if (!blocking(world, probe, x + o[0], y + o[1], z + o[2])) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Something to break: not air or fluid, and not unbreakable. */

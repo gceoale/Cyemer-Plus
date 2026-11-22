@@ -164,6 +164,18 @@ public class SpotFinder extends Module {
     private boolean wasAuto = false;
     private long stepSince = 0L;
     private int lastLeaks = -1;
+    private int descendTo = Integer.MIN_VALUE;
+    private boolean doorSealed = false;
+    private int doorOpen = -1;
+    private long placingSince = 0L;
+    private long sealRetryAt = 0L;
+    private double lastPosX = Double.NaN;
+    private long progressAt = 0L;
+    private double progX = Double.NaN;
+    private double progY = Double.NaN;
+    private double progZ = Double.NaN;
+    private double lastPosY = Double.NaN;
+    private double lastPosZ = Double.NaN;
 
     // ETA: predicted seconds left, scaled by how fast the work has really gone so far.
     private long jobStarted = 0L;
@@ -297,6 +309,9 @@ public class SpotFinder extends Module {
                 this.wasAuto = true;
                 this.stepSince = System.currentTimeMillis();
                 this.lastEtaAt = 0L;
+                this.lastPosX = Double.NaN;
+                this.descendTo = Integer.MIN_VALUE;
+                this.progX = Double.NaN;
             }
             try {
                 this.tickAuto(world, self);
@@ -444,11 +459,24 @@ public class SpotFinder extends Module {
             this.keys.releaseAll();
             RotationManager.stop(this);
             this.lastEtaAt = 0L;
+            this.lastPosX = Double.NaN;
             return;
         }
         String danger = this.danger(self);
         if (danger != null) {
             this.abort("§cAuto Mine stopped§r §7- " + danger);
+            return;
+        }
+        double px = self.method_23317();
+        double py = self.method_23318();
+        double pz = self.method_23321();
+        boolean jumped = !Double.isNaN(this.lastPosX)
+                && (px - this.lastPosX) * (px - this.lastPosX) + (py - this.lastPosY) * (py - this.lastPosY) + (pz - this.lastPosZ) * (pz - this.lastPosZ) > 24.0 * 24.0;
+        this.lastPosX = px;
+        this.lastPosY = py;
+        this.lastPosZ = pz;
+        if (jumped && this.mining != null) {
+            this.abort("§cAuto Mine stopped§r §7- the player was teleported away from the room");
             return;
         }
         if (this.mining == null && !this.startJob(self)) {
@@ -517,15 +545,24 @@ public class SpotFinder extends Module {
         this.predDone = 0.0;
         this.actualDone = 0.0;
         this.etaAnnounced = false;
+        this.descendTo = Integer.MIN_VALUE;
+        this.doorSealed = false;
+        this.doorOpen = -1;
+        this.placingSince = 0L;
+        this.sealRetryAt = 0L;
+        this.progX = Double.NaN;
         this.say("§aAuto Mine§r §7- " + this.describe(pick, self));
+        if ("Outside".equals(this.seal.getCurrentMode()) && pick.h() > 3) {
+            this.say("§7Sealing from outside needs a room 3 or less tall to walk back out of, so this one is sealed from inside");
+        }
         return true;
     }
 
     /**
      * Sets up the dig to the current door. The room and its walls are off
      * limits to the route except the door's own cells: a straight tunnel
-     * one wide and two tall through the wall at floor level, so the only
-     * opening the job ever makes is the one it walls up at the end.
+     * one wide and two tall through the wall at the top layer's level, so
+     * the only opening the job ever makes is the one it walls up.
      */
     private void beginTravel(class_746 self) {
         Spot s = this.mining;
@@ -545,22 +582,23 @@ public class SpotFinder extends Module {
         this.door = d;
         int t = this.thickness();
         int floor = s.y();
+        int level = doorLevel(s);
         LongOpenHashSet allowed = new LongOpenHashSet();
         for (int k = 1; k <= t; k++) {
-            allowed.add(FarmRoute.key(d.x() - k * d.dx(), floor, d.z() - k * d.dz()));
-            allowed.add(FarmRoute.key(d.x() - k * d.dx(), floor + 1, d.z() - k * d.dz()));
+            allowed.add(FarmRoute.key(d.x() - k * d.dx(), level, d.z() - k * d.dz()));
+            allowed.add(FarmRoute.key(d.x() - k * d.dx(), level + 1, d.z() - k * d.dz()));
         }
         boolean walkIn = s.h() >= 2;
         if (walkIn) {
-            allowed.add(FarmRoute.key(d.x(), floor, d.z()));
-            allowed.add(FarmRoute.key(d.x(), floor + 1, d.z()));
+            allowed.add(FarmRoute.key(d.x(), level, d.z()));
+            allowed.add(FarmRoute.key(d.x(), level + 1, d.z()));
         }
         FarmRoute.Dig rules = new FarmRoute.Dig(s.x() - t, floor - t, s.z() - t,
                 s.x() + s.lx() - 1 + t, floor + s.h() - 1 + t, s.z() + s.lz() - 1 + t, allowed, this.noMine);
         // Into the room when it is tall enough to stand in, else into the doorway.
         int gx = walkIn ? d.x() : d.x() - d.dx();
         int gz = walkIn ? d.z() : d.z() - d.dz();
-        this.walker = new DigWalker(this, this.keys, this.turnSpeed::getValue, this.bestTool::isEnabled, gx, floor, gz, rules);
+        this.walker = new DigWalker(this, this.keys, this.turnSpeed::getValue, this.bestTool::isEnabled, gx, level, gz, rules);
         this.phase = Phase.TRAVEL;
     }
 
@@ -591,7 +629,9 @@ public class SpotFinder extends Module {
         if (r == DigWalker.Result.ARRIVED) {
             this.walker = null;
             this.phase = Phase.MINE;
-            this.say("§7At the room, mining it out");
+            this.progX = Double.NaN;
+            int n = layers(this.mining).length;
+            this.say("§7At the room, mining it out" + (n > 1 ? " from the top down in " + n + " layers" : ""));
         } else if (r == DigWalker.Result.FAILED) {
             if (w.fatal()) {
                 this.abort("§cAuto Mine stopped§r §7- " + w.failure());
@@ -606,69 +646,189 @@ public class SpotFinder extends Module {
         }
     }
 
+    /** Feet heights the room is mined from, top down: 3-block layers, each mined standing on the one below. */
+    private static int[] layers(Spot s) {
+        int floor = s.y();
+        int f = doorLevel(s);
+        List<Integer> out = new ArrayList<>();
+        out.add(f);
+        while (f > floor) {
+            f = Math.max(floor, f - 3);
+            out.add(f);
+        }
+        return out.stream().mapToInt(Integer::intValue).toArray();
+    }
+
+    /** The door comes in on the top layer, so the whole room is mined from the top down. */
+    private static int doorLevel(Spot s) {
+        return Math.max(s.y(), s.y() + s.h() - 3);
+    }
+
+    /** The next layer below feet height y, or MIN_VALUE. */
+    private static int layerBelow(Spot s, int y) {
+        for (int f : layers(s)) {
+            if (f < y) {
+                return f;
+            }
+        }
+        return Integer.MIN_VALUE;
+    }
+
+    private boolean sealsOutside(Spot s) {
+        return "Outside".equals(this.seal.getCurrentMode()) && s.h() <= 3;
+    }
+
+    /** Inside sealing walls the door up right after we get in, so the room stays sealed while it is mined. */
+    private boolean sealsEarly(Spot s) {
+        return !"Off".equals(this.seal.getCurrentMode()) && !this.sealsOutside(s) && s.h() >= 2;
+    }
+
     /**
-     * Mines the room the way a player does: turns the camera onto a block
-     * and holds attack, so vanilla does the breaking, the progress and the
-     * packets. Attack is only held while the crosshair is actually on a
-     * block inside the room, so a turn that sweeps across a wall can never
-     * chip it; the walls are what keeps the room sealed.
+     * Mines the room from the top down in 3-block layers. On each layer it
+     * mines everything at or above its feet it can reach, walks (over the
+     * layer below, round any holes) to where there is more, and once the
+     * layer is done digs straight down to the next. It never breaks a block
+     * below its feet except to go down, and attack is only held while the
+     * crosshair is on the block it means to break, so walls and floor stay
+     * whole.
      */
     private void tickMine(class_638 world, class_746 self, Spot s) {
         long now = System.currentTimeMillis();
         this.skipped.values().removeIf(until -> until < now);
+        int fx = (int) Math.floor(self.method_23317());
+        int fy = (int) Math.floor(self.method_23318() + 0.2);
+        int fz = (int) Math.floor(self.method_23321());
 
+        // Watchdog: moving or starting on a new block is progress; nothing for long means stuck.
+        double mx = self.method_23317() - this.progX;
+        double my = self.method_23318() - this.progY;
+        double mz = self.method_23321() - this.progZ;
+        if (Double.isNaN(this.progX) || mx * mx + my * my + mz * mz > 0.25) {
+            this.progX = self.method_23317();
+            this.progY = self.method_23318();
+            this.progZ = self.method_23321();
+            this.progressAt = now;
+        } else if (now - this.progressAt > 30_000L) {
+            this.abort("§cAuto Mine stopped§r §7- no progress for 30s at (" + fx + ", " + fy + ", " + fz + "). Turn it back on to retry");
+            return;
+        }
+
+        if (!this.insideRoom(self, s)) {
+            // In the doorway of a 1-tall room, or not in yet.
+            Aim a = this.pickTarget(world, self, s, Integer.MIN_VALUE);
+            if (a != null) {
+                this.keys.releaseMovement();
+                this.mineAt(world, self, a, now);
+                return;
+            }
+            this.mineTarget = null;
+            this.keys.set(Key.ATTACK, false);
+            this.keys.releaseMovement();
+            int left = this.remaining(world, s);
+            if (left == 0) {
+                this.roomDone(self, s, 0);
+            } else if (!this.autoWalk.isEnabled()) {
+                RotationManager.stop(this);
+                this.hint("§7Get within reach of the room to start: dig down to (" + s.x() + ", " + doorLevel(s) + ", " + s.z() + ")");
+            } else if (s.h() >= 2) {
+                this.beginTravel(self);
+            } else if (this.skipped.isEmpty()) {
+                this.roomDone(self, s, left);
+            }
+            return;
+        }
+
+        if (this.sealsEarly(s) && !this.doorSealed && now >= this.sealRetryAt && this.sealDoor(world, self, s, now)) {
+            return;
+        }
+        if (this.descendTo != Integer.MIN_VALUE) {
+            if (fy <= this.descendTo) {
+                this.descendTo = Integer.MIN_VALUE;
+            } else {
+                if (self.method_24828()) {
+                    this.descend(world, self, s, fx, fy, fz, now);
+                }
+                return;
+            }
+        }
+
+        Aim a = this.pickTarget(world, self, s, fy);
+        if (a != null) {
+            this.keys.releaseMovement();
+            this.mineAt(world, self, a, now);
+            return;
+        }
+        this.mineTarget = null;
+        this.keys.set(Key.ATTACK, false);
+        if (!self.method_24828()) {
+            return;
+        }
+        if (this.autoWalk.isEnabled() && this.walkToWork(world, self, s, fx, fy, fz)) {
+            return;
+        }
+        this.keys.releaseMovement();
+        int below = layerBelow(s, fy);
+        if (below != Integer.MIN_VALUE && this.anyBelow(world, s, fy)) {
+            if (this.autoWalk.isEnabled()) {
+                this.descendTo = below;
+            } else {
+                this.hint("§7This layer is done: dig down to the next one at Y " + below);
+            }
+            return;
+        }
+        int left = this.remaining(world, s);
+        if (left == 0) {
+            this.roomDone(self, s, 0);
+        } else if (this.skipped.isEmpty()) {
+            this.roomDone(self, s, left); // what is left cannot be reached from anywhere we can stand
+        }
+    }
+
+    /**
+     * The block to mine next: one we can see and reach at or above minY.
+     * The current one is kept while it is still there, and a new one is the
+     * one closest to where the camera already points (then the nearest),
+     * so the view sweeps across the face instead of flicking about.
+     */
+    private Aim pickTarget(class_638 world, class_746 self, Spot s, int minY) {
         class_243 eye = self.method_33571();
         double reach = self.method_55754() - 0.25;
+        Aim cur = this.mineTarget;
+        if (cur != null && cur.y() >= minY && this.minable(world, cur.x(), cur.y(), cur.z()) && !this.skipped.containsKey(pack(cur.x(), cur.y(), cur.z()))) {
+            class_243 p = DigKit.visiblePoint(world, self, eye, cur.x(), cur.y(), cur.z(), reach);
+            if (p != null) {
+                return new Aim(cur.x(), cur.y(), cur.z(), p);
+            }
+        }
         Aim best = null;
-        double bestD = Double.MAX_VALUE;
+        double bestScore = Double.MAX_VALUE;
         int ex = (int) Math.floor(eye.field_1352);
         int ey = (int) Math.floor(eye.field_1351);
         int ez = (int) Math.floor(eye.field_1350);
         int r = (int) Math.ceil(reach) + 1;
         for (int x = Math.max(s.x(), ex - r); x <= Math.min(s.x() + s.lx() - 1, ex + r); x++) {
-            for (int y = Math.max(s.y(), ey - r); y <= Math.min(s.y() + s.h() - 1, ey + r); y++) {
+            for (int y = Math.max(Math.max(s.y(), minY), ey - r); y <= Math.min(s.y() + s.h() - 1, ey + r); y++) {
                 for (int z = Math.max(s.z(), ez - r); z <= Math.min(s.z() + s.lz() - 1, ez + r); z++) {
-                    if (!this.minable(world, x, y, z) || this.skipped.containsKey(pack(x, y, z))) {
+                    if (!this.minable(world, x, y, z) || this.skipped.containsKey(pack(x, y, z)) || !DigKit.exposed(world, this.probe, x, y, z)) {
                         continue;
                     }
                     class_243 point = DigKit.visiblePoint(world, self, eye, x, y, z, reach);
                     if (point == null) {
                         continue;
                     }
-                    double d = point.method_1025(eye);
-                    if (d < bestD) {
-                        bestD = d;
+                    double score = DigKit.angleTo(self, eye, point) + 12.0 * Math.sqrt(point.method_1025(eye));
+                    if (score < bestScore) {
+                        bestScore = score;
                         best = new Aim(x, y, z, point);
                     }
                 }
             }
         }
+        return best;
+    }
 
-        if (best == null) {
-            this.mineTarget = null;
-            this.keys.set(Key.ATTACK, false);
-            int left = this.remaining(world, s);
-            if (left == 0) {
-                this.roomDone(self, s, 0);
-                return;
-            }
-            if (this.autoWalk.isEnabled() && s.h() >= 2 && this.insideRoom(self, s)) {
-                this.walkIntoRoom(world, self, s);
-                return;
-            }
-            this.keys.releaseMovement();
-            if (!this.autoWalk.isEnabled()) {
-                RotationManager.stop(this);
-                this.hint("§7Get within reach of the room to start: dig down to (" + s.x() + ", " + s.y() + ", " + s.z() + ")");
-            } else if (s.h() >= 2) {
-                this.beginTravel(self); // outside the room with work left: dig back to the door
-            } else if (this.skipped.isEmpty()) {
-                this.roomDone(self, s, left); // a 1-tall room cannot be walked into
-            }
-            return;
-        }
-        this.keys.releaseMovement();
-
+    /** Looks at the block and holds attack while the crosshair is on it, after the safety checks. */
+    private void mineAt(class_638 world, class_746 self, Aim best, long now) {
         // The spot was sealed when found; make sure it still is before opening this block.
         if (DigKit.fluidBeside(world, this.probe, best.x(), best.y(), best.z())) {
             this.abort("§cAuto Mine stopped§r §7- fluid beside (" + best.x() + ", " + best.y() + ", " + best.z() + "), so nothing floods in");
@@ -679,37 +839,284 @@ public class SpotFinder extends Module {
             this.abort("§cAuto Mine stopped§r §7- no working pickaxe left in the hotbar");
             return;
         }
-
         if (this.mineTarget == null || this.mineTarget.x() != best.x() || this.mineTarget.y() != best.y() || this.mineTarget.z() != best.z()) {
-            this.mineTarget = best;
             this.targetSince = now;
+            this.progressAt = now;
         } else if (now - this.targetSince > Math.max(6000L, DigKit.breakTicks(this.mc, world, state, this.probe) * 150L)) {
             // Far longer than it should take: leave it and come back to it later.
             this.skipped.put(pack(best.x(), best.y(), best.z()), now + 10_000L);
             this.mineTarget = null;
+            this.keys.set(Key.ATTACK, false);
             return;
         }
+        this.mineTarget = best;
         if (this.bestTool.isEnabled()) {
             DigKit.selectBestTool(this.mc, state);
         }
-
-        class_243 aimPoint = best.point();
-        RotationManager.setRotationSupplier(this, RotationManager.Priority.NORMAL, () -> aimPoint, this.turnSpeed.getValue(),
-                RotationManager.RotationMode.LINEAR, 0.0, false, false);
-        this.keys.set(Key.ATTACK, this.crosshairInRoom(world, s));
+        DigKit.look(this, best.point(), this.turnSpeed.getValue(), false);
+        this.keys.set(Key.ATTACK, DigKit.crosshairOn(this.mc, best.x(), best.y(), best.z()));
     }
 
-    /** A block the crosshair is on, if it is a minable block inside the room. */
-    private boolean crosshairInRoom(class_638 world, Spot s) {
-        if (!(this.mc.field_1765 instanceof class_3965 hit) || hit.method_17783() != class_239.class_240.field_1332) {
+    /** Any room block still to mine below feet height y. */
+    private boolean anyBelow(class_638 world, Spot s, int y) {
+        for (int x = s.x(); x < s.x() + s.lx(); x++) {
+            for (int yy = s.y(); yy < Math.min(y, s.y() + s.h()); yy++) {
+                for (int z = s.z(); z < s.z() + s.lz(); z++) {
+                    if (this.minable(world, x, yy, z)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /** Digs straight down, centred over the hole, until we stand on the next layer. */
+    private void descend(class_638 world, class_746 self, Spot s, int fx, int fy, int fz, long now) {
+        if (!this.safeDrop(world, s, fx, fy, fz)) {
+            int[] step = this.bfsStep(world, s, fx, fy, fz, (x, z) -> this.safeDrop(world, s, x, fy, z), true);
+            if (step == null) {
+                this.descendTo = Integer.MIN_VALUE;
+                this.roomDone(self, s, this.remaining(world, s)); // no safe way down from this layer
+                return;
+            }
+            this.keys.set(Key.ATTACK, false);
+            this.walkTo(self, step[0] + 0.5, step[1] + 0.5, step[2] == 1);
+            return;
+        }
+        if (!this.center(self, fx + 0.5, fz + 0.5)) {
+            this.keys.set(Key.ATTACK, false);
+            return;
+        }
+        int by = fy - 1;
+        class_243 p = DigKit.visiblePoint(world, self, self.method_33571(), fx, by, fz, self.method_55754() - 0.25);
+        this.mineAt(world, self, new Aim(fx, by, fz, p != null ? p : new class_243(fx + 0.5, by + 0.95, fz + 0.5)), now);
+    }
+
+    /** Breaking the block under (x, y, z) drops us at most 3 blocks, onto something solid, into nothing wet, and stays in the room. */
+    private boolean safeDrop(class_638 world, Spot s, int x, int y, int z) {
+        if (y - 1 < s.y() || !this.minable(world, x, y - 1, z) || DigKit.fluidBeside(world, this.probe, x, y - 1, z)) {
             return false;
         }
-        class_2338 pos = hit.method_17777();
-        int x = pos.method_10263();
-        int y = pos.method_10264();
-        int z = pos.method_10260();
-        return x >= s.x() && x < s.x() + s.lx() && y >= s.y() && y < s.y() + s.h() && z >= s.z() && z < s.z() + s.lz()
-                && this.minable(world, x, y, z);
+        for (int j = 2; j <= 4; j++) {
+            if (DigKit.fluidAt(world, this.probe, x, y - j, z)) {
+                return false;
+            }
+            if (DigKit.blocking(world, this.probe, x, y - j, z)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Walks over this layer to the nearest place next to blocks still to
+     * mine within reach of it. Returns false when there is nowhere to go.
+     */
+    private boolean walkToWork(class_638 world, class_746 self, Spot s, int fx, int fy, int fz) {
+        int lx = s.lx();
+        int lz = s.lz();
+        int lo = Math.max(s.y(), fy);
+        int hi = Math.min(s.y() + s.h() - 1, fy + 4);
+        boolean[] work = new boolean[lx * lz];
+        boolean any = false;
+        for (int i = 0; i < lx; i++) {
+            for (int j = 0; j < lz; j++) {
+                for (int y = lo; y <= hi; y++) {
+                    int x = s.x() + i;
+                    int z = s.z() + j;
+                    if (this.minable(world, x, y, z) && !this.skipped.containsKey(pack(x, y, z))) {
+                        work[i * lz + j] = true;
+                        any = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!any) {
+            return false;
+        }
+        int[] step = this.bfsStep(world, s, fx, fy, fz, (x, z) -> {
+            for (int dx = -1; dx <= 1; dx++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    int i = x + dx - s.x();
+                    int j = z + dz - s.z();
+                    if (i >= 0 && i < lx && j >= 0 && j < lz && work[i * lz + j]) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }, true);
+        if (step == null) {
+            return false;
+        }
+        this.walkTo(self, step[0] + 0.5, step[1] + 0.5, step[2] == 1);
+        return true;
+    }
+
+    private interface CellTest {
+        boolean test(int x, int z);
+    }
+
+    /** Can stand at (x, y, z): room to stand, something solid underneath, nothing wet. */
+    private boolean standable(class_638 world, int x, int y, int z) {
+        return !DigKit.blocking(world, this.probe, x, y, z) && !DigKit.blocking(world, this.probe, x, y + 1, z)
+                && DigKit.blocking(world, this.probe, x, y - 1, z) && !DigKit.fluidAt(world, this.probe, x, y, z);
+    }
+
+    /**
+     * Breadth-first search over the cells we can stand in on this layer,
+     * inside the room, to the nearest one that passes the test. Returns the
+     * point to walk toward (a couple of cells along the way, so walking is
+     * one smooth line rather than a stop in every block) and whether that
+     * point is the goal itself, or null if no such cell can be reached.
+     */
+    private int[] bfsStep(class_638 world, Spot s, int fx, int fy, int fz, CellTest goal, boolean skipStart) {
+        int lx = s.lx();
+        int lz = s.lz();
+        int si = fx - s.x();
+        int sj = fz - s.z();
+        if (si < 0 || si >= lx || sj < 0 || sj >= lz) {
+            return null;
+        }
+        int[] prev = new int[lx * lz];
+        java.util.Arrays.fill(prev, -1);
+        int start = si * lz + sj;
+        prev[start] = start;
+        ArrayDeque<Integer> queue = new ArrayDeque<>();
+        queue.add(start);
+        int found = -1;
+        int[][] moves = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1}};
+        while (!queue.isEmpty()) {
+            int c = queue.poll();
+            int ci = c / lz;
+            int cj = c % lz;
+            if ((c != start || !skipStart) && goal.test(s.x() + ci, s.z() + cj)) {
+                found = c;
+                break;
+            }
+            for (int[] m : moves) {
+                int ni = ci + m[0];
+                int nj = cj + m[1];
+                if (ni < 0 || ni >= lx || nj < 0 || nj >= lz || prev[ni * lz + nj] != -1) {
+                    continue;
+                }
+                if (!this.standable(world, s.x() + ni, fy, s.z() + nj)) {
+                    continue;
+                }
+                if (m[0] != 0 && m[1] != 0 && (!this.standable(world, s.x() + ni, fy, s.z() + cj) || !this.standable(world, s.x() + ci, fy, s.z() + nj))) {
+                    continue; // only cut a corner when both sides are open
+                }
+                prev[ni * lz + nj] = c;
+                queue.add(ni * lz + nj);
+            }
+        }
+        if (found < 0) {
+            return null;
+        }
+        List<Integer> route = new ArrayList<>();
+        for (int c = found; c != start; c = prev[c]) {
+            route.add(0, c);
+        }
+        if (route.isEmpty()) {
+            return new int[]{fx, fz, 1};
+        }
+        int k = Math.min(2, route.size()) - 1;
+        int c = route.get(k);
+        return new int[]{s.x() + c / lz, s.z() + c % lz, k == route.size() - 1 ? 1 : 0};
+    }
+
+    /**
+     * Walls the door up from inside as soon as we are clear of it. True
+     * while it is busy placing, so mining waits; if it cannot manage it
+     * soon, mining carries on and it tries again later.
+     */
+    private boolean sealDoor(class_638 world, class_746 self, Spot s, long now) {
+        Door d = this.door;
+        if (d == null) {
+            this.doorSealed = true;
+            return false;
+        }
+        int y0 = doorLevel(s);
+        int x = d.x() - d.dx();
+        int z = d.z() - d.dz();
+        List<int[]> open = new ArrayList<>();
+        for (int y = y0; y <= Math.min(y0 + 1, s.y() + s.h() - 1); y++) {
+            if (!DigKit.solid(world, this.probe, x, y, z)) {
+                open.add(new int[]{x, y, z});
+            }
+        }
+        if (open.isEmpty()) {
+            this.doorSealed = true;
+            this.releasePlacing();
+            this.say("§7Door walled up behind you, so the room stays sealed while it is mined");
+            return false;
+        }
+        if (open.size() != this.doorOpen) {
+            this.doorOpen = open.size();
+            this.placingSince = 0L;
+        }
+        int slot = DigKit.fillerSlot(this.mc);
+        if (slot < 0) {
+            this.releasePlacing();
+            return false;
+        }
+        Place place = this.findPlacement(world, self, open);
+        if (place == null) {
+            this.releasePlacing();
+            this.placingSince = 0L;
+            return false;
+        }
+        if (this.placingSince == 0L) {
+            this.placingSince = now;
+        } else if (now - this.placingSince > 3000L) {
+            this.placingSince = 0L;
+            this.sealRetryAt = now + 15_000L;
+            this.releasePlacing();
+            return false;
+        }
+        this.keys.set(Key.ATTACK, false);
+        this.place(self, slot, place);
+        return true;
+    }
+
+    /** The first opening (lowest first) that a block can be placed into from here, and how. */
+    private Place findPlacement(class_638 world, class_746 self, List<int[]> openings) {
+        class_243 eye = self.method_33571();
+        double reach = self.method_55754() - 0.25;
+        class_238 me = self.method_5829();
+        for (int[] leak : openings) {
+            if (me.method_1003(leak[0], leak[1], leak[2], leak[0] + 1, leak[1] + 1, leak[2] + 1)) {
+                continue; // vanilla will not place a block where we stand
+            }
+            Place place = this.placement(world, self, eye, reach, leak);
+            if (place != null) {
+                return place;
+            }
+        }
+        return null;
+    }
+
+    /** Holds sneak and use with the block selected while the crosshair is on the right face. */
+    private void place(class_746 self, int slot, Place place) {
+        this.keys.set(Key.FORWARD, false);
+        this.keys.set(Key.JUMP, false);
+        this.keys.set(Key.SNEAK, true); // so a chest or crafting table there takes the block instead of opening
+        class_1661 inventory = self.method_31548();
+        if (inventory.method_67532() != slot) {
+            inventory.method_61496(slot);
+        }
+        DigKit.look(this, place.point(), this.turnSpeed.getValue(), false);
+        boolean on = this.mc.field_1765 instanceof class_3965 hit && hit.method_17783() == class_239.class_240.field_1332
+                && hit.method_17777().method_10263() == place.x() && hit.method_17777().method_10264() == place.y()
+                && hit.method_17777().method_10260() == place.z() && hit.method_17780() == place.side();
+        this.keys.set(Key.USE, on);
+    }
+
+    private void releasePlacing() {
+        this.keys.set(Key.USE, false);
+        this.keys.set(Key.SNEAK, false);
     }
 
     private boolean minable(class_638 world, int x, int y, int z) {
@@ -737,65 +1144,48 @@ public class SpotFinder extends Module {
         return fx >= s.x() && fx < s.x() + s.lx() && fz >= s.z() && fz < s.z() + s.lz() && fy >= s.y() && fy < s.y() + s.h();
     }
 
-    /**
-     * Nothing in reach, standing inside the opened room: walk toward the
-     * nearest block still to mine. The room is flat and sealed, so walking
-     * in it is safe.
-     */
-    private void walkIntoRoom(class_638 world, class_746 self, Spot s) {
-        double goalX = Double.NaN;
-        double goalZ = Double.NaN;
-        double bestD = Double.MAX_VALUE;
-        for (int x = s.x(); x < s.x() + s.lx(); x++) {
-            for (int y = s.y(); y < s.y() + s.h(); y++) {
-                for (int z = s.z(); z < s.z() + s.lz(); z++) {
-                    if (!this.minable(world, x, y, z) || this.skipped.containsKey(pack(x, y, z))) {
-                        continue;
-                    }
-                    double dx = x + 0.5 - self.method_23317();
-                    double dz = z + 0.5 - self.method_23321();
-                    double d = dx * dx + dz * dz;
-                    if (d < bestD) {
-                        bestD = d;
-                        goalX = x + 0.5;
-                        goalZ = z + 0.5;
-                    }
-                }
-            }
-        }
-        if (Double.isNaN(goalX)) {
-            this.keys.set(Key.FORWARD, false);
-            return;
-        }
-        this.walkTo(self, goalX, goalZ);
+    private boolean walkTo(class_746 self, double x, double z) {
+        return this.walkTo(self, x, z, true);
     }
 
-    /** Turns toward a point and walks there; true once within 0.3 of it. */
-    private boolean walkTo(class_746 self, double x, double z) {
+    /** Turns toward a point and walks there; with stop, lets go once within 0.3 and says so. */
+    private boolean walkTo(class_746 self, double x, double z, boolean stop) {
         double dx = x - self.method_23317();
         double dz = z - self.method_23321();
-        if (dx * dx + dz * dz < 0.09) {
+        this.keys.set(Key.SNEAK, false);
+        if (stop && dx * dx + dz * dz < 0.09) {
             this.keys.set(Key.FORWARD, false);
             return true;
         }
-        class_243 look = new class_243(x, self.method_33571().field_1351, z);
-        RotationManager.setRotationSupplier(this, RotationManager.Priority.NORMAL, () -> look, this.turnSpeed.getValue(),
-                RotationManager.RotationMode.LINEAR, 0.0, false, true);
+        DigKit.look(this, new class_243(x, self.method_33571().field_1351, z), this.turnSpeed.getValue(), true);
         this.keys.set(Key.FORWARD, RotationManager.isRotationComplete(25.0F));
         return false;
     }
 
+    /** Creeps (sneaking, so it cannot overshoot or slip off) to within 0.18 of a point; true once there. */
+    private boolean center(class_746 self, double x, double z) {
+        double dx = x - self.method_23317();
+        double dz = z - self.method_23321();
+        if (dx * dx + dz * dz < 0.18 * 0.18) {
+            this.keys.set(Key.FORWARD, false);
+            this.keys.set(Key.SNEAK, false);
+            return true;
+        }
+        DigKit.look(this, new class_243(x, self.method_33571().field_1351, z), this.turnSpeed.getValue(), true);
+        this.keys.set(Key.SNEAK, true);
+        this.keys.set(Key.FORWARD, RotationManager.isRotationComplete(20.0F));
+        return false;
+    }
+
     private void roomDone(class_746 self, Spot s, int leftover) {
-        String what = leftover > 0
-                ? "Mined what the doorway reaches (" + leftover + " blocks are out of reach in a 1-tall room)"
-                : "Room mined out";
+        String what = leftover > 0 ? "Room mined out except " + leftover + " blocks it can't reach" : "Room mined out";
         String mode = this.seal.getCurrentMode();
         if ("Off".equals(mode)) {
             this.finish("§a" + what + "§r §7- " + s.lx() + "x" + s.lz() + "x" + s.h() + " at (" + s.x() + ", " + s.y() + ", " + s.z() + ")");
             return;
         }
         // Inside needs a room tall enough to stand in; without a door of our own there is no tunnel to stand in.
-        boolean inside = this.door == null || ("Inside".equals(mode) && s.h() >= 2 && this.insideRoom(self, s));
+        boolean inside = this.door == null || (!this.sealsOutside(s) && s.h() >= 2 && this.insideRoom(self, s));
         this.keys.releaseAll();
         this.phase = inside ? Phase.SEAL : Phase.LEAVE;
         this.stepSince = System.currentTimeMillis();
@@ -863,24 +1253,16 @@ public class SpotFinder extends Module {
             return;
         }
 
-        class_243 eye = self.method_33571();
-        double reach = self.method_55754() - 0.25;
         class_238 me = self.method_5829();
-        Place place = null;
         boolean inTheWay = false;
         for (int[] leak : leaks) {
             if (me.method_1003(leak[0], leak[1], leak[2], leak[0] + 1, leak[1] + 1, leak[2] + 1)) {
-                inTheWay = true; // vanilla will not place a block where we stand
-                continue;
-            }
-            place = this.placement(world, self, eye, reach, leak);
-            if (place != null) {
-                break;
+                inTheWay = true;
             }
         }
+        Place place = this.findPlacement(world, self, leaks);
         if (place == null) {
-            this.keys.set(Key.USE, false);
-            this.keys.set(Key.SNEAK, false);
+            this.releasePlacing();
             if (this.insideRoom(self, s)) {
                 if (inTheWay) {
                     this.walkTo(self, s.centerX(), s.centerZ());
@@ -895,21 +1277,7 @@ public class SpotFinder extends Module {
             }
             return;
         }
-
-        this.keys.set(Key.FORWARD, false);
-        this.keys.set(Key.JUMP, false);
-        this.keys.set(Key.SNEAK, true);
-        class_1661 inventory = self.method_31548();
-        if (inventory.method_67532() != slot) {
-            inventory.method_61496(slot);
-        }
-        class_243 aim = place.point();
-        RotationManager.setRotationSupplier(this, RotationManager.Priority.NORMAL, () -> aim, this.turnSpeed.getValue(),
-                RotationManager.RotationMode.LINEAR, 0.0, false, false);
-        boolean on = this.mc.field_1765 instanceof class_3965 hit && hit.method_17783() == class_239.class_240.field_1332
-                && hit.method_17777().method_10263() == place.x() && hit.method_17777().method_10264() == place.y()
-                && hit.method_17777().method_10260() == place.z() && hit.method_17780() == place.side();
-        this.keys.set(Key.USE, on);
+        this.place(self, slot, place);
     }
 
     /** A face of a solid neighbour of the opening that we can see and reach, so clicking it fills the opening. */
@@ -1074,7 +1442,7 @@ public class SpotFinder extends Module {
         }
         String what = switch (this.phase) {
             case TRAVEL -> this.walker != null ? this.walker.activity() : "Heading to the room";
-            case MINE -> "Mining the room";
+            case MINE -> this.layerLabel(this.mining);
             case LEAVE -> "Heading out to seal it";
             case SEAL -> "Sealing the entrance";
         };
@@ -1082,12 +1450,35 @@ public class SpotFinder extends Module {
         double elapsed = (now - this.jobStarted) / 1000.0;
         double left = Double.isNaN(this.eta) ? Double.NaN : Math.max(0.0, this.eta - (now - this.etaAt) / 1000.0);
         String line1 = "Auto Mine · " + what + " · " + (Double.isNaN(left) ? "working out the ETA" : "~" + DigKit.time(left) + " left");
+        String event = this.phase == Phase.TRAVEL && this.walker != null ? this.walker.recentEvent() : null;
         String line2 = (Double.isNaN(left) ? "" : Math.round(100.0 * elapsed / Math.max(1.0, elapsed + left)) + "% · ")
-                + this.blocksLeft + " blocks to dig · " + DigKit.time(elapsed) + " so far";
+                + this.blocksLeft + " blocks to dig · " + DigKit.time(elapsed) + " so far" + (event != null ? " · " + event : "");
         int centerX = context.method_51421() / 2;
         int y = context.method_51443() / 2 + 46;
         this.centered(context, line1, centerX, y, this.color.getValue().getRGB() | 0xFF000000);
         this.centered(context, line2, centerX, y + 10, 0xFFAAAAAA);
+    }
+
+    private String layerLabel(Spot s) {
+        int[] levels = layers(s);
+        if (levels.length <= 1) {
+            return "Mining the room";
+        }
+        int fy = (int) Math.floor(this.mc.field_1724.method_23318() + 0.2);
+        int layer = levels.length;
+        for (int i = 0; i < levels.length; i++) {
+            if (fy >= levels[i]) {
+                layer = i + 1;
+                break;
+            }
+        }
+        return (this.descendTo != Integer.MIN_VALUE ? "Digging down to layer " : "Mining layer ") + layer + " of " + levels.length;
+    }
+
+    /** Auto Mine is on a job: other modules' AutoRTP must not carry the player off. */
+    public static boolean isDigging() {
+        SpotFinder f = instance;
+        return f != null && f.isEnabled() && f.autoMine.isEnabled() && f.mining != null;
     }
 
     private void centered(class_332 context, String text, int centerX, int y, int color) {

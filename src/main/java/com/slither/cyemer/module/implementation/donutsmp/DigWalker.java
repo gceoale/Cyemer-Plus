@@ -57,6 +57,8 @@ final class DigWalker {
     private String failure;
     private boolean fatal;
     private String activity = "Planning a route";
+    private String event = null;
+    private long eventAt = 0L;
 
     private long mineKey = Long.MIN_VALUE;
     private long mineSince;
@@ -99,6 +101,15 @@ final class DigWalker {
     /** Bumped whenever the route is replaced, so an ETA knows not to compare across plans. */
     int version() {
         return this.version;
+    }
+
+    /** The last re-route and why, for a few seconds after it happened. */
+    String recentEvent() {
+        return this.event != null && System.currentTimeMillis() - this.eventAt < 5000L ? this.event : null;
+    }
+
+    int replans() {
+        return this.replans;
     }
 
     String failure() {
@@ -151,15 +162,16 @@ final class DigWalker {
                     break;
                 }
             }
-            if (found < 0) {
-                if (++this.offPathTicks > 10) {
-                    return this.replan(world, self, "knocked off the route");
-                }
-            } else {
+            if (found >= 0) {
                 this.offPathTicks = 0;
-                if (found > this.idx || (found == this.idx && horizontal(self, this.path.get(found)) < 0.45)) {
+                // Straight runs carry on through each block; a turn waits for the middle so the turn clears the corner.
+                if (found > this.idx || (found == this.idx && (horizontal(self, this.path.get(found)) < 0.45 || this.straightAhead(found)))) {
                     this.idx = found + 1;
                 }
+            } else if (this.nearRoute(fx, fy, fz)) {
+                this.offPathTicks = 0; // clipping a corner or sliding along a wall: still on course
+            } else if (++this.offPathTicks > 20) {
+                return this.replan(world, self, "knocked off the route");
             }
         }
         if (this.idx >= this.path.size()) {
@@ -322,8 +334,7 @@ final class DigWalker {
     }
 
     private void rotate(class_243 point, boolean yawOnly) {
-        RotationManager.setRotationSupplier(this.owner, RotationManager.Priority.NORMAL, () -> point, this.turnSpeed.getAsDouble(),
-                RotationManager.RotationMode.LINEAR, 0.0, false, yawOnly);
+        DigKit.look(this.owner, point, this.turnSpeed.getAsDouble(), yawOnly);
     }
 
     private Result ban(class_638 world, class_746 self, int[] c, String why) {
@@ -337,6 +348,10 @@ final class DigWalker {
         this.search = null;
         this.mineCell = null;
         this.mineKey = Long.MIN_VALUE;
+        if (why != null) {
+            this.event = "re-routing: " + why;
+            this.eventAt = System.currentTimeMillis();
+        }
         if (++this.replans > MAX_REPLANS) {
             return this.fail("gave up after " + MAX_REPLANS + " re-routes" + (why != null ? ", last one: " + why : ""), false);
         }
@@ -372,6 +387,28 @@ final class DigWalker {
         this.anchorY = self.method_23318();
         this.anchorZ = self.method_23321();
         this.anchorAt = now;
+    }
+
+    /** The route goes straight on, level, after step j. */
+    private boolean straightAhead(int j) {
+        if (j < 1 || j + 1 >= this.path.size()) {
+            return false;
+        }
+        FarmRoute.Step a = this.path.get(j - 1);
+        FarmRoute.Step b = this.path.get(j);
+        FarmRoute.Step c = this.path.get(j + 1);
+        return b.x() - a.x() == c.x() - b.x() && b.z() - a.z() == c.z() - b.z() && a.y() == b.y() && b.y() == c.y();
+    }
+
+    /** Within a block of where we were or where we are heading. */
+    private boolean nearRoute(int fx, int fy, int fz) {
+        for (int j = Math.max(0, this.idx - 1); j <= Math.min(this.path.size() - 1, this.idx); j++) {
+            FarmRoute.Step s = this.path.get(j);
+            if (Math.abs(s.x() - fx) <= 1 && Math.abs(s.z() - fz) <= 1 && Math.abs(s.y() - fy) <= 1) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean listed(List<int[]> cells, int x, int y, int z) {

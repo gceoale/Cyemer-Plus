@@ -1,6 +1,7 @@
 package com.slither.cyemer.util;
 
 import com.slither.cyemer.module.implementation.donutsmp.FarmFinder;
+import com.slither.cyemer.module.implementation.donutsmp.SpotFinder;
 import com.slither.cyemer.module.implementation.render.BlockESP;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
@@ -23,6 +24,9 @@ public final class AutoRtp {
         class_310 mc = class_310.method_1551();
         if (mc.field_1724 == null || mc.field_1724.field_3944 == null) {
             return;
+        }
+        if (SpotFinder.isDigging()) {
+            return; // an /rtp now would carry the player away from the room Auto Mine is digging
         }
         String command = raw == null ? "" : raw.trim();
         while (command.startsWith("/")) {
