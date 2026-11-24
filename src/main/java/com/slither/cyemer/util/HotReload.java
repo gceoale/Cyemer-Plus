@@ -413,12 +413,19 @@ public final class HotReload {
         List<Module> old = new ArrayList<>(manager.getModules());
         config.save("default"); // what is set now is what the new modules start with
         Map<Class<?>, Module> keep = new HashMap<>();
+        for (Module m : old) {
+            if (m.getClass().getClassLoader() == Cyemer.class.getClassLoader() && core.contains(m.getClass().getName().replace('.', '/'))) {
+                keep.put(m.getClass(), m);
+            }
+        }
+        // Build the new modules before touching the running ones: if one fails
+        // to construct, this throws and every running module is left as it was.
+        List<Module> fresh = ModuleManager.createModules(ModuleManager.REGISTRY, loader, keep::get);
         Module.quiet = true;
         int swapped = 0;
         try {
             for (Module m : old) {
-                if (m.getClass().getClassLoader() == Cyemer.class.getClassLoader() && core.contains(m.getClass().getName().replace('.', '/'))) {
-                    keep.put(m.getClass(), m);
+                if (keep.get(m.getClass()) == m) {
                     continue;
                 }
                 try {
@@ -431,7 +438,7 @@ public final class HotReload {
                 swapped++;
             }
             RotationManager.stop();
-            manager.replaceModules(ModuleManager.createModules(ModuleManager.REGISTRY, loader, keep::get));
+            manager.replaceModules(fresh);
             config.load("default");
         } finally {
             Module.quiet = false;
